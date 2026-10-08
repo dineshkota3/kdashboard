@@ -103,6 +103,16 @@ calendar: {
 - Panel failures are isolated (try/catch) — never breaks lists/health rendering.
 - If the OAuth callback function misbehaves: revoke access from Google Account → Security → Third-party access, fix, re-consent.
 
+## Tests
+
+- **Extend `functions/telegram-webhook.test.ts`** with unit tests for the new exported pure functions:
+  - `parseEventHeuristically`: `friday 3pm` → next Friday 15:00 IST (+60 min default); `tomorrow 9am`; `tonight 8pm`; past weekday → next week; garbage → `null`
+  - `validateEventAction`: valid ISO start; `{date,time}` normalization; rejects empty title, non-finite duration, malformed ISO
+  - validator chain still rejects meal/recipe kinds (regression guard)
+- **Renderer smoke** (`scripts/test-phase0.mjs` or a phase-3 extension): fixture with a `calendar` block (3 events) renders; fixture with `calendar.status:"not_connected"` renders the empty/placeholder card; missing `calendar` key renders home unchanged (tolerant parse)
+- **Live integration:** the verification checklist above (read path, bot booking, both kill switches, expired-token auto-refresh)
+- `npm test` green before deploying; OAuth function deployed only after Google Console steps are done.
+
 ## 6. Results log
 
 _Record the consent-screen decisions, publish-to-production date, and any prompt tuning for date resolution._

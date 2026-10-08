@@ -82,6 +82,16 @@ Latency/quality:
 - Delete the `ZAI_API_KEY` secret → permanent heuristic mode (by design, zero code changes needed).
 - If `response_format: json_object` proves unsupported/misbehaving for glm-4.6: drop the field; strict validators already reject malformed JSON into the heuristic path.
 
+## Tests
+
+- **Extend `functions/telegram-webhook.test.ts`:**
+  - source-level assertion: the LLM system prompt (in `telegram-webhook.ts`) contains `grocery|workout|todo` and no `meal`/`recipe` schema lines
+  - keep all existing heuristic-parser tests green — they ARE the fallback contract; if you tweak prompts/parsers, they must still pass
+  - if you extract any new pure helpers (e.g. response-JSON cleanup), export them and unit-test them here
+- **Live tests (need Z.ai key):** the natural-phrasing verification list above; log the chosen action kind per message and compare against intent
+- **Fallback tests (live):** invalid `ZAI_API_KEY` → parse still succeeds via heuristics; function log shows the failed Z.ai call then a heuristic action
+- `npm test` must stay green before and after redeploying the webhook function.
+
 ## 5. Results log
 
 _Record latency observations, prompt-tuning notes, and any commands that needed prompt fixes._

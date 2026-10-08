@@ -59,6 +59,13 @@ Only if 4a is stable and you want the extra metric.
 - If the iOS build fails on signing: dashboard shows zeros; everything else unaffected; retry after fixing team/profile.
 - 4b is purely additive — revert the migration + payload field + C++ line independently.
 
+## Tests
+
+- **Extend `functions/telegram-webhook.test.ts`** if target handling changes (e.g. a new `exercise` target metric): `set exercise target to 30` → `kind:"target"`, `metric:"exercise"`; validator rejects unknown metrics and non-positive values (follow the existing steps/calories test pattern).
+- **Health payload tests** (extend the integration script or a `scripts/test-phase4.mjs`): fixture with `health` block (steps/calories, + `exercise_minutes` in 4b) renders with gauges; fixture with zeros renders; missing `health` key renders unchanged.
+- **Live pipeline:** the verification checklist above (app Sync → rows → payload → gauge); verify values in the payload match Apple Health exactly for the same day.
+- `npm test` stays green throughout; 4b changes are gated behind 4a passing.
+
 ## Results log
 
 _Record provisioning profile expiry date (set a renewal reminder), sync cadence you settle on, and 4b decision._

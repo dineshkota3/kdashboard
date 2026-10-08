@@ -91,6 +91,17 @@ Re-copy the tar.gz after each rebuild. `bin/proof.sh` and `bin/diagnose.sh` in t
 - SSE never fires: hourly `INTERVAL` refresh still renders; debug `DASHBOARD_EVENTS_URL` host later without blocking.
 - If keep-awake interferes with reading: only run **Refresh Once** on demand and keep the dashboard stopped.
 
+## Tests
+
+- **Local (must pass before packaging):** `npm test` — includes renderer smoke tests rendering every view at the PW5's 1236×1648 resolution with non-blank-output assertions. Add cases here if you touch the renderer: render with a fixture missing `workout` or `grocery` lists, and with `--invert-images`.
+- **Extension script checks (on Kindle via SSH or KUAL):**
+  - `bin/diagnose.sh` → firmware, disk, endpoint reachability all sane
+  - `bin/proof.sh` → repo's own proof checks pass
+  - `bin/once.sh` / `once-light.sh` / `once-dark.sh` → one refresh cycle each, exit 0, log shows `render=` success lines
+  - `bin/start.sh` then `bin/stop.sh` → process pidfile created then removed; `preventScreenSaver` released after stop (`lipc-get-prop com.lab126.powerd getSimulatedSleepValue` or observable sleep behavior)
+- **Data integrity:** `cat /mnt/us/documents/kindle-dashboard-data.json` matches `curl` of `kindle-dashboard-data` (same version hash)
+- New on-device observations get recorded in the Results log; anything scriptable gets added to `scripts/test-phase1.mjs` (optional: device-over-SSH assertions).
+
 ## 6. Results log
 
 _Record battery readings, which ABI ladder step worked, and any deviations._

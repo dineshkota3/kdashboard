@@ -28,6 +28,9 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | New: `migrations/..._add-exercise-minutes.sql` | Optional exercise metric | 4b |
 | New: `scripts/list-smartthings-devices.mjs` | PAT device lister | 5 |
 | `config.sh.example` | Sleep window + timezone defaults documented | 1 |
+| Tests | `npm test` = parser unit tests (`functions/telegram-webhook.test.ts`) + integration suite (`scripts/test-phase0.mjs`: hygiene, migrations, fixture, renderer smoke at PW5 resolution). Each phase extends the suite (see its Tests section) | 0+ |
+| Bug fix (vs upstream) | Heuristic parser: `clear` actions carried `items:["clear todo"]` instead of `[]` (fallback clobbered intentional empty list); payload-only, DB effect was correct | 0 |
+| `telegram-webhook.ts` import style | InsForge SDK import made lazy (`await import` inside handler) so Node can run the pure parsers in tests; Deno deploy behavior unchanged | 0 |
 
 ## Runbooks
 

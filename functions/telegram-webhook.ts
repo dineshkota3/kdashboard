@@ -1,5 +1,3 @@
-import { createAdminClient } from "npm:@insforge/sdk";
-
 type ListKey = "grocery" | "workout" | "todo";
 
 type PlannerAction = {
@@ -73,6 +71,7 @@ export default async function(req: Request): Promise<Response> {
     return jsonResponse({ ok: true, ignored: true, reason: "unparsed" });
   }
 
+  const { createAdminClient } = await import("npm:@insforge/sdk");
   const admin = createAdminClient({
     baseUrl: requiredEnv("INSFORGE_BASE_URL"),
     apiKey: requiredEnv("INSFORGE_API_KEY")
@@ -300,7 +299,7 @@ function corsHeaders(): HeadersInit {
   };
 }
 
-function parseFastHeuristicMessage(message: string): TelegramAction | null {
+export function parseFastHeuristicMessage(message: string): TelegramAction | null {
   const normalized = message.trim().replace(/\s+/g, " ");
   const lower = normalized.toLowerCase();
 
@@ -359,7 +358,7 @@ function detectListKey(message: string): ListKey {
   return "todo";
 }
 
-function parseMessageHeuristically(message: string): TelegramAction {
+export function parseMessageHeuristically(message: string): TelegramAction {
   const challengeAction = parseChallengeHeuristically(message);
   if (challengeAction) return challengeAction;
 
@@ -404,12 +403,17 @@ function parseMessageHeuristically(message: string): TelegramAction {
     kind: "planner",
     action,
     list_key: listKey,
-    items: items.length > 0 ? items : [withoutAction || normalized],
+    items:
+      action === "clear"
+        ? []
+        : items.length > 0
+          ? items
+          : [withoutAction || normalized],
     all_lists: !explicitList && (action === "complete" || action === "uncomplete" || action === "delete")
   };
 }
 
-function validateTelegramAction(input: unknown): TelegramAction | null {
+export function validateTelegramAction(input: unknown): TelegramAction | null {
   return validateChallengeAction(input) ?? validateTargetAction(input) ?? validatePlannerAction(input);
 }
 

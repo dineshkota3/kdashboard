@@ -8,6 +8,7 @@
     "native:install": "node scripts/install-kindle-native.mjs",
     "native:proof": "node scripts/check-kindle-proof.mjs",
     "check": "npm run native:check",
+    "test": "node --test functions/telegram-webhook.test.ts && node scripts/test-phase0.mjs",
     "telegram:chat-id": "node scripts/get-telegram-chat-id.mjs",
     "telegram:configure": "node scripts/configure-telegram.mjs",
     "kit:backend": "node scripts/bootstrap-insforge-kit.mjs"

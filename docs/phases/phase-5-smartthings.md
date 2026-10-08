@@ -90,6 +90,15 @@ appliances: [{ id, label, state, job_status, completion_percent, fetched_at, sta
 - Absent `appliances` JSON key → C++ `parseAppliances` returns 0 → card never drawn (renderer untouched upstream-compatible).
 - Alert latency unsatisfying → tighten cron to `*/5 * * * *` if invocation quota allows.
 
+## Tests
+
+- **Unit tests (new `functions/smartthings-poll.test.ts` or extended webhook tests)** for the exported pure helpers:
+  - `mapSmartThingsStatus(raw)` → `{state, job_status, completion_percent}` against **captured real status JSON fixtures** (save the raw payload from your appliance in `functions/fixtures/smartthings-*.json`: idle, running, finished, unknown capability layout)
+  - `shouldAlert(prev, next)`: idle→running false; running→finished true; finished→finished false (no duplicate); missing prev → false
+- **Renderer smoke:** fixture with `appliances` block (washer RUNNING / DONE / UNKNOWN variants) renders the card; missing `appliances` key renders unchanged
+- **Live integration:** the verification checklist above (manual poll, transition alert exactly once, PAT revoke → UNKNOWN)
+- `npm test` green before deploying the poll function and registering the cron schedule.
+
 ## 6. Results log
 
 _Record the capability paths found in your appliance's raw status JSON, PAT expiry date, and chosen cron interval._

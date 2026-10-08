@@ -139,7 +139,7 @@ Telegram commands (all via heuristic parser — no LLM key set):
 - [ ] `remove eggs from groceries` → deleted
 - [ ] `clear todo` → clears done items
 - [ ] `drank 1L water` / `set steps target to 12000` → health targets update
-- [ ] `add meal butter chicken` → **rejected** ("could not understand") — proves strip is complete
+- [ ] `add meal butter chicken` → **no meal action kind** (without an LLM key the heuristic parser is a catch-all: text lands as a plain todo/chores add; it must never produce `meal_plan`/`recipe` actions — covered by unit test)
 - [ ] Message from a second Telegram account → ignored (chat allowlist works)
 
 Database (InsForge dashboard → Database):
@@ -157,6 +157,23 @@ npm run native:check      # builds kindle-dashboard-local, renders fixtures/dash
 - Function deploy failure: `npx @insforge/cli functions deploy telegram-webhook --file functions/telegram-webhook.ts --name "Telegram Planner Webhook"` one at a time; check function logs in the InsForge dashboard.
 - Migration failure on bootstrap: InsForge DB is fresh — fix SQL, drop partial tables via dashboard, re-run `npm run kit:backend`.
 
+## Tests
+
+Run with `npm test` (no accounts or network needed):
+
+- **Parser unit tests** — `functions/telegram-webhook.test.ts` (node:test, runs natively on Node 23+; the webhook's InsForge import is lazy so Node can load the pure parsers):
+  - planner add/complete/uncomplete/delete/clear across all three lists, multi-item `and`/comma splitting, `all_lists` behavior
+  - health targets, challenge water/sleep/workout check-ins
+  - **meal/recipe negative tests**: meal/recipe/rating phrasing must never produce `meal_plan`/`recipe`/`recipe_rating` kinds
+  - validator gate: rejects unknown `list_key` (incl. `meal`), rejects legacy meal/recipe action kinds, rejects empty-item adds, accepts clear-with-empty-items
+- **Integration tests** — `scripts/test-phase0.mjs`:
+  - repo hygiene: zero `meal|recipe` references outside phase docs/test files
+  - bootstrap consistency: every listed migration exists; CHECK keys == seed keys == `{grocery, workout, todo}`; no recipe/meal_plan tables in any migration
+  - fixture shape: lists exactly `todo, workout, grocery`; no recipes/meal_plan keys
+  - renderer smoke: binary builds warning-free; renders every view (home/challenge/chores/workout/grocery) at PW5 resolution 1236×1648 with non-blank output; tolerates a fixture with only the todo list
+
+Every later phase extends `npm test` — see the Tests section in each phase doc.
+
 ## 6. Results log
 
 - **2026-10-08 — code strip complete** (commit `fbfe376`, branch `fork/phase-0-strip-meals`):
@@ -166,4 +183,9 @@ npm run native:check      # builds kindle-dashboard-local, renders fixtures/dash
   - `kindle_dashboard.cpp`: recipe structs/parsers/screens/touch actions/star rating/meal assets removed; home grid right column = Workout + Grocery; `applyInitialView` views now `challenge|chores|workout|grocery`; renders clean (`-Wall -Wextra -Wpedantic`, zero warnings, dead helpers removed).
   - Fixture updated with workout list; **visual render verified** (760×1024 dump: CHORES + challenge left, WORKOUT + GROCERY right).
   - README / INSTALL_FOR_USERS / SETUP_WITH_ASSISTANT meal sections removed; repo-wide grep for meal/recipe = 0 hits.
+- **2026-10-08 — tests added** (`npm test` green: 27 unit + 10 integration):
+  - `functions/telegram-webhook.test.ts` (parser/validator unit tests) + `scripts/test-phase0.mjs` (hygiene/migrations/fixture/render smoke at 1236×1648)
+  - webhook InsForge import made lazy (`await import` inside handler) so Node can load the module for tests — deploy behavior under Deno unchanged (verify at deploy)
+  - pure parsers exported (`parseFastHeuristicMessage`, `parseMessageHeuristically`, `validateTelegramAction`)
+  - **upstream bug fixed**: clear actions returned `items:["clear todo"]` (fallback clobbered the intentional `[]`); DB effect was unaffected but payload/validator contract was violated
 - **Pending (needs user accounts):** InsForge login + project create, `npm run kit:backend`, BotFather bot token, `telegram:chat-id` + `telegram:configure`, then the Telegram + payload verification checklists.
