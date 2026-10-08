@@ -44,6 +44,13 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 2. `npx @insforge/cli secrets update SMARTTHINGS_PAT <new-pat>` (check CLI verbs).
 3. Manual poll once to confirm: curl the `smartthings-poll` function with the poll token header.
 
+### Reading InsForge secrets in shell — Phase 0 gotcha
+`npx @insforge/cli secrets get KEY` prints `KEY =<value>` (no space after `=`) on one line. Parse with:
+```sh
+npx @insforge/cli secrets get API_KEY | tail -1 | sed 's/^API_KEY[[:space:]]*=[[:space:]]*//' | tr -d '\n'
+```
+Do NOT use `awk '{print $NF}'` — it silently produces corrupted values (cost us an hour of `AUTH_UNAUTHORIZED`). Verify any copied secret against `GET /api/database/records/<table>` (expect 200, not 401) before wiring it into functions. Functions snapshot env at deploy — after changing a secret, redeploy the functions that use it.
+
 ### Zig ABI ladder for PW5 — Phase 1
 Default `make -C kindle/native extension-zig` (soft-float static musl). If `Illegal instruction`/`Exec format error` in the device log:
 1. `ZIG_TARGET=arm-linux-musleabihf ZIG_MCPU=generic+v7a`
