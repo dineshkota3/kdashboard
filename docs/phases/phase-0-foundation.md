@@ -193,4 +193,9 @@ Every later phase extends `npm test` — see the Tests section in each phase doc
   - `npm run kit:backend`: 5 migrations applied, 4 generated secrets created, 5 functions deployed
   - **Gotcha found + fixed**: project API key secret got corrupted during `secrets get` output parsing (CLI prints `KEY =<value>` with no space; `awk '{print $NF}'` grabbed a broken fragment) → functions got `AUTH_UNAUTHORIZED` 401s → endpoint 500'd as `[object Object]`. Fixed with exact `sed` extraction; added structured error logging to the data function's catch block.
   - Endpoint verified: HTTP 200 with `X-Dashboard-Read-Token`, 401 without; payload = `{todo, workout, grocery}` lists, no recipes/meal_plan, version hash present
-- **Pending (needs user):** BotFather bot token → `telegram:chat-id` → `telegram:configure`, then Telegram verification checklist.
+- **2026-10-08 — Telegram wired and E2E verified (Phase 0 gate PASSED):**
+  - BotFather bot created; `TELEGRAM_BOT_TOKEN` secret stored; chat `8645326379` (Dinesh) discovered and allowlisted; webhook registered against `.../functions/telegram-webhook` (getWebhookInfo confirms, 0 pending)
+  - Live command test — all 6 verified in DB + bot replies seen: `add milk and eggs to groceries` (2 rows), `put leg day on workout`, `add clean desk to todo`, `mark milk done` (done=true), `drank 1L water` (challenge log 1.00), `set steps target to 12000` (target row)
+  - dashboard-data reflects live state: grocery `✗ eggs, ✔ milk`, steps_target 12000, version hash changes
+  - Not tested: second-account rejection (needs a second Telegram account — low risk, chat allowlist logic is upstream-proven)
+- **Phase 0 COMPLETE.** Remaining nice-to-have: none blocking Phase 1.
