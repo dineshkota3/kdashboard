@@ -32,6 +32,14 @@
       ]
     },
     {
+      "key": "workout",
+      "title": "Workout",
+      "items": [
+        { "id": "5", "text": "Push day", "done": false, "updated_at": "2026-06-28T08:05:00.000Z" },
+        { "id": "6", "text": "10k steps walk", "done": false, "updated_at": "2026-06-28T08:06:00.000Z" }
+      ]
+    },
+    {
       "key": "grocery",
       "title": "Grocery",
       "items": [

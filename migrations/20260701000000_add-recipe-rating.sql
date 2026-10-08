@@ -1,3 +1,0 @@
-ALTER TABLE recipes
-  ADD COLUMN IF NOT EXISTS rating NUMERIC(3, 1) NOT NULL DEFAULT 0
-  CHECK (rating >= 0 AND rating <= 10);

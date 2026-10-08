@@ -98,7 +98,7 @@ formats in `docs/INSTALL_FOR_USERS.md`:
 
 ```text
 Show me the supported Telegram message examples from docs/INSTALL_FOR_USERS.md
-and help me test one planner command, one challenge check-in, and one meal-plan
+and help me test one planner command and one challenge check-in
 command without exposing tokens.
 ```
 

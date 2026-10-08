@@ -1,6 +1,6 @@
 import { createAdminClient } from "npm:@insforge/sdk";
 
-type ListKey = "grocery" | "todo";
+type ListKey = "grocery" | "workout" | "todo";
 
 type PlannerItem = {
   id: string;
@@ -35,26 +35,11 @@ type ChallengeLog = {
   updated_at: string;
 };
 
-type MealPlanEntry = {
-  date: string;
-  recipe_id: string;
-  sort_order: number;
-  updated_at: string;
-};
-
-type RecipeVersion = {
-  id: string;
-  rating: string | number;
-  updated_at: string;
-};
-
 type DashboardData = {
   items: PlannerItem[];
   health: HealthSummary | null;
   targets: HealthTarget[];
   challenge: ChallengeLog | null;
-  mealPlan: MealPlanEntry[];
-  recipes: RecipeVersion[];
 };
 
 export default function(req: Request): Response {
@@ -144,14 +129,12 @@ async function loadDashboardData(): Promise<DashboardData> {
     itemsResult,
     healthResult,
     challengeResult,
-    targetsResult,
-    mealPlanResult,
-    recipesResult
+    targetsResult
   ] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,created_at,updated_at")
-      .in("list_key", ["todo", "grocery"])
+      .in("list_key", ["todo", "workout", "grocery"])
       .order("created_at", { ascending: false }),
     admin.database
       .from("health_daily_summaries")
@@ -167,16 +150,7 @@ async function loadDashboardData(): Promise<DashboardData> {
     admin.database
       .from("health_targets")
       .select("metric,label,target_value,unit,updated_at")
-      .order("metric", { ascending: true }),
-    admin.database
-      .from("meal_plan_entries")
-      .select("date,recipe_id,sort_order,updated_at")
-      .eq("date", today)
-      .order("sort_order", { ascending: true }),
-    admin.database
-      .from("recipes")
-      .select("id,rating,updated_at")
-      .order("id", { ascending: true })
+      .order("metric", { ascending: true })
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
@@ -192,19 +166,11 @@ async function loadDashboardData(): Promise<DashboardData> {
   const { data: targets, error: targetsError } = targetsResult;
   if (targetsError) throw targetsError;
 
-  const { data: mealPlanRows, error: mealPlanError } = mealPlanResult;
-  if (mealPlanError) throw mealPlanError;
-
-  const { data: recipeRows, error: recipesError } = recipesResult;
-  if (recipesError) throw recipesError;
-
   const payload = {
     items: items as PlannerItem[],
     health: firstRow<HealthSummary>(healthRows),
     targets: targets as HealthTarget[],
-    challenge: firstRow<ChallengeLog>(challengeRows),
-    mealPlan: mealPlanRows as MealPlanEntry[],
-    recipes: recipeRows as RecipeVersion[]
+    challenge: firstRow<ChallengeLog>(challengeRows)
   };
   logTiming("kindle-dashboard-events", {
     base_query_ms: baseQueryMs,
@@ -219,8 +185,6 @@ function getDashboardVersion(data: DashboardData): string {
     items: [...data.items].sort((a, b) => a.updated_at.localeCompare(b.updated_at)),
     health: data.health,
     challenge: data.challenge,
-    mealPlan: data.mealPlan,
-    recipes: data.recipes,
     targets: [...data.targets].sort((a, b) => a.metric.localeCompare(b.metric))
   }));
 }

@@ -1,2 +1,0 @@
-ALTER TABLE recipes
-  ADD COLUMN IF NOT EXISTS photo_pgm_base64 TEXT;

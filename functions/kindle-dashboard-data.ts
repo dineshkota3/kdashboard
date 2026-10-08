@@ -1,6 +1,6 @@
 import { createAdminClient } from "npm:@insforge/sdk";
 
-type ListKey = "grocery" | "todo";
+type ListKey = "grocery" | "workout" | "todo";
 
 type PlannerItem = {
   id: string;
@@ -34,55 +34,6 @@ type ChallengeLog = {
   sleep_hours: string | number;
   workouts: number;
   updated_at: string;
-};
-
-type RecipeRow = {
-  id: string;
-  title: string;
-  photo_url: string | null;
-  photo_key: string | null;
-  total_calories: string | number;
-  carbs_g: string | number;
-  fat_g: string | number;
-  protein_g: string | number;
-  rating: string | number;
-  instructions: string;
-  created_at: string;
-  updated_at: string;
-};
-
-type RecipeIngredientRow = {
-  recipe_id: string;
-  name: string;
-  amount: string;
-  calories: string | number | null;
-  sort_order: number;
-};
-
-type MealPlanEntryRow = {
-  date: string;
-  recipe_id: string;
-  sort_order: number;
-  updated_at: string;
-};
-
-type RecipePayload = {
-  id: string;
-  title: string;
-  photo_url: string | null;
-  photo_key: string | null;
-  total_calories: number;
-  carbs_g: number;
-  fat_g: number;
-  protein_g: number;
-  rating: number;
-  instructions: string;
-  ingredients: Array<{
-    name: string;
-    amount: string;
-    calories: number | null;
-    sort_order: number;
-  }>;
 };
 
 type DashboardPayload = {
@@ -120,12 +71,11 @@ type DashboardPayload = {
       updated_at: string;
     }>;
   }>;
-  meal_plan: RecipePayload[];
-  recipes: RecipePayload[];
 };
 
 const LIST_TITLES: Record<ListKey, string> = {
   todo: "Chores",
+  workout: "Workout",
   grocery: "Grocery"
 };
 const COMPLETED_ITEM_HIDE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -167,14 +117,12 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     healthResult,
     challengeResult,
     challengeStartResult,
-    mealPlanResult,
-    targetsResult,
-    recipesResult
+    targetsResult
   ] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,created_at,updated_at")
-      .in("list_key", ["todo", "grocery"])
+      .in("list_key", ["todo", "workout", "grocery"])
       .order("created_at", { ascending: false }),
     admin.database
       .from("health_daily_summaries")
@@ -193,18 +141,9 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       .order("date", { ascending: true })
       .limit(1),
     admin.database
-      .from("meal_plan_entries")
-      .select("date,recipe_id,sort_order,updated_at")
-      .eq("date", today)
-      .order("sort_order", { ascending: true }),
-    admin.database
       .from("health_targets")
       .select("metric,label,target_value,unit,updated_at")
-      .order("metric", { ascending: true }),
-    admin.database
-      .from("recipes")
-      .select("id,title,photo_url,photo_key,total_calories,carbs_g,fat_g,protein_g,rating,instructions,created_at,updated_at")
-      .order("title", { ascending: true })
+      .order("metric", { ascending: true })
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
@@ -220,31 +159,8 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   const { data: challengeStartRows, error: challengeStartError } = challengeStartResult;
   if (challengeStartError) throw challengeStartError;
 
-  const { data: mealPlanRows, error: mealPlanError } = mealPlanResult;
-  if (mealPlanError) throw mealPlanError;
-
   const { data: targets, error: targetsError } = targetsResult;
   if (targetsError) throw targetsError;
-
-  const { data: recipes, error: recipesError } = recipesResult;
-  if (recipesError) throw recipesError;
-
-  const recipeRows = recipes as RecipeRow[];
-  const recipeIds = recipeRows.map((recipe) => recipe.id);
-  let ingredientRows: RecipeIngredientRow[] = [];
-  const ingredientsStarted = timeMs();
-
-  if (recipeIds.length > 0) {
-    const { data: recipeIngredients, error: ingredientsError } = await admin.database
-      .from("recipe_ingredients")
-      .select("recipe_id,name,amount,calories,sort_order")
-      .in("recipe_id", recipeIds)
-      .order("sort_order", { ascending: true });
-
-    if (ingredientsError) throw ingredientsError;
-    ingredientRows = recipeIngredients as RecipeIngredientRow[];
-  }
-  const ingredientsQueryMs = elapsedMs(ingredientsStarted);
 
   const buildStarted = timeMs();
   const staleCompletedCutoff = Date.now() - COMPLETED_ITEM_HIDE_AFTER_MS;
@@ -254,12 +170,8 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   const challengeStart = firstRow<Pick<ChallengeLog, "date">>(challengeStartRows);
   const challengeDay = challengeStart?.date ? challengeDayFor(today, challengeStart.date) : 1;
   const healthTargets = targets as HealthTarget[];
-  const mealPlanEntries = mealPlanRows as MealPlanEntryRow[];
   const stepsTarget = metricTarget(healthTargets, "steps", 10000, "steps");
   const caloriesTarget = metricTarget(healthTargets, "calories", 2000, "kcal");
-  const ingredientsByRecipeId = groupIngredientsByRecipeId(ingredientRows);
-  const recipePayloads = recipeRows.map((recipe) => recipePayload(recipe, ingredientsByRecipeId));
-  const recipesById = new Map(recipePayloads.map((recipe) => [recipe.id, recipe]));
 
   const payloadWithoutVersion = {
     ok: true as const,
@@ -285,7 +197,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       workouts: Math.max(0, Number(challenge?.workouts ?? 0)),
       workout_target: 2
     },
-    lists: (["todo", "grocery"] as const).map((key) => ({
+    lists: (["todo", "workout", "grocery"] as const).map((key) => ({
       key,
       title: LIST_TITLES[key],
       items: plannerItems
@@ -297,11 +209,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
           done: item.done,
           updated_at: item.updated_at
         }))
-    })),
-    meal_plan: mealPlanEntries
-      .map((entry) => recipesById.get(entry.recipe_id))
-      .filter((recipe): recipe is RecipePayload => Boolean(recipe)),
-    recipes: recipePayloads
+    }))
   };
 
   const payload = {
@@ -309,59 +217,14 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     version: hashText(JSON.stringify({
       health: payloadWithoutVersion.health,
       challenge: payloadWithoutVersion.challenge,
-      lists: payloadWithoutVersion.lists,
-      meal_plan: payloadWithoutVersion.meal_plan,
-      recipes: payloadWithoutVersion.recipes
+      lists: payloadWithoutVersion.lists
     }))
   };
   logTiming("kindle-dashboard-data", {
     base_query_ms: baseQueryMs,
-    ingredients_query_ms: ingredientsQueryMs,
-    payload_build_ms: elapsedMs(buildStarted),
-    recipe_count: recipeRows.length,
-    ingredient_count: ingredientRows.length
+    payload_build_ms: elapsedMs(buildStarted)
   });
   return payload;
-}
-
-function groupIngredientsByRecipeId(ingredientRows: RecipeIngredientRow[]): Map<string, RecipeIngredientRow[]> {
-  const ingredientsByRecipeId = new Map<string, RecipeIngredientRow[]>();
-  for (const ingredient of ingredientRows) {
-    const existing = ingredientsByRecipeId.get(ingredient.recipe_id);
-    if (existing) existing.push(ingredient);
-    else ingredientsByRecipeId.set(ingredient.recipe_id, [ingredient]);
-  }
-  return ingredientsByRecipeId;
-}
-
-function recipePayload(recipe: RecipeRow, ingredientsByRecipeId: Map<string, RecipeIngredientRow[]>): RecipePayload {
-  const ingredients = ingredientsByRecipeId.get(recipe.id) ?? [];
-  return {
-    id: recipe.id,
-    title: recipe.title,
-    photo_url: recipe.photo_url,
-    photo_key: recipe.photo_key,
-    total_calories: Math.max(0, Number(recipe.total_calories ?? 0)),
-    carbs_g: Math.max(0, Number(recipe.carbs_g ?? 0)),
-    fat_g: Math.max(0, Number(recipe.fat_g ?? 0)),
-    protein_g: Math.max(0, Number(recipe.protein_g ?? 0)),
-    rating: clampRating(recipe.rating),
-    instructions: recipe.instructions,
-    ingredients: [...ingredients]
-      .sort((a, b) => a.sort_order - b.sort_order)
-      .map((ingredient) => ({
-        name: ingredient.name,
-        amount: ingredient.amount,
-        calories: ingredient.calories == null ? null : Math.max(0, Number(ingredient.calories)),
-        sort_order: ingredient.sort_order
-      }))
-  };
-}
-
-function clampRating(value: string | number): number {
-  const rating = Number(value ?? 0);
-  if (!Number.isFinite(rating)) return 0;
-  return Math.max(0, Math.min(5, Math.round(rating * 10) / 10));
 }
 
 function dashboardLocalDate(): string {

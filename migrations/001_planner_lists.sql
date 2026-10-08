@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS planner_lists (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  key TEXT NOT NULL UNIQUE CHECK (key IN ('grocery', 'workout', 'meal', 'todo')),
+  key TEXT NOT NULL UNIQUE CHECK (key IN ('grocery', 'workout', 'todo')),
   title TEXT NOT NULL,
   sort_order INTEGER NOT NULL UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -35,8 +35,7 @@ INSERT INTO planner_lists (key, title, sort_order)
 VALUES
   ('grocery', 'Grocery list', 1),
   ('workout', 'Workout Plan', 2),
-  ('meal', 'Meal Plan', 3),
-  ('todo', 'Todo List', 4)
+  ('todo', 'Todo List', 3)
 ON CONFLICT (key) DO UPDATE
 SET title = EXCLUDED.title,
     sort_order = EXCLUDED.sort_order;

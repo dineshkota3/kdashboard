@@ -67,7 +67,7 @@ Code entry points:
 
 InsForge handles the cloud layer:
 
-**Postgres Database:** chores, groceries, recipes, meal plans, health summaries,
+**Postgres Database:** chores, groceries, workouts, health summaries,
 challenge logs
 
 **Edge functions:** read dashboard data, sync HealthKit, parse Telegram updates,
@@ -78,9 +78,7 @@ Relevant files:
 - Schema:
   [`migrations/001_planner_lists.sql`](migrations/001_planner_lists.sql),
   [`migrations/20260627000000_create-health-daily-summaries.sql`](migrations/20260627000000_create-health-daily-summaries.sql),
-  [`migrations/20260629052000_create-recipes.sql`](migrations/20260629052000_create-recipes.sql),
-  [`migrations/20260629083000_create-challenge-daily-logs.sql`](migrations/20260629083000_create-challenge-daily-logs.sql),
-  [`migrations/20260629162000_create-meal-plan-entries.sql`](migrations/20260629162000_create-meal-plan-entries.sql)
+  [`migrations/20260629083000_create-challenge-daily-logs.sql`](migrations/20260629083000_create-challenge-daily-logs.sql)
 - Dashboard read endpoint:
   [`functions/kindle-dashboard-data.ts`](functions/kindle-dashboard-data.ts)
 - Toggle endpoint:
@@ -101,9 +99,7 @@ const payload = {
   version: hashText(JSON.stringify({
     health: payloadWithoutVersion.health,
     challenge: payloadWithoutVersion.challenge,
-    lists: payloadWithoutVersion.lists,
-    meal_plan: payloadWithoutVersion.meal_plan,
-    recipes: payloadWithoutVersion.recipes
+    lists: payloadWithoutVersion.lists
   }))
 };
 ```
@@ -196,7 +192,6 @@ List names also have hardcoded aliases:
 const LIST_ALIASES = {
   grocery: ["grocery", "groceries", "shopping", "market"],
   workout: ["workout", "exercise", "training", "gym"],
-  meal: ["meal", "meals", "menu", "food"],
   todo: ["todo", "to-do", "task", "tasks", "errand", "errands"]
 };
 ```
@@ -282,8 +277,6 @@ Example response:
       ]
     }
   ],
-  "meal_plan": [],
-  "recipes": [],
   "version": "a13f9c"
 }
 ```
@@ -335,7 +328,7 @@ Touch is manual:
 tap coordinates -> rectangle -> dashboard action
 
 Each tappable area is registered as a region, so a tap on a list item can
-become: mark task done, open recipe, switch day.
+become: mark task done, switch day.
 
 Code:
 [`handlePendingTouch`](kindle/native/src/kindle_dashboard.cpp) and

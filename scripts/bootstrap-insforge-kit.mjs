@@ -6,19 +6,11 @@ const schemaMigrations = [
   "migrations/001_planner_lists.sql",
   "migrations/20260627000000_create-health-daily-summaries.sql",
   "migrations/20260627000100_create-health-targets.sql",
-  "migrations/20260629052000_create-recipes.sql",
-  "migrations/20260629070000_add-recipe-photo-pgm.sql",
   "migrations/20260629083000_create-challenge-daily-logs.sql",
-  "migrations/20260629162000_create-meal-plan-entries.sql",
-  "migrations/20260701000000_add-recipe-rating.sql",
-  "migrations/20260701001000_recipe-rating-out-of-five.sql",
   "migrations/20260707000000_enable_rls_private_tables.sql"
 ];
 
-const sampleDataMigrations = [
-  "migrations/20260629065000_add-sample-toast.sql",
-  "migrations/20260629070100_clear-sample-toast-storage-photo.sql"
-];
+const sampleDataMigrations = [];
 
 const functions = [
   ["kindle-dashboard-data", "functions/kindle-dashboard-data.ts", "Kindle Dashboard Data"],

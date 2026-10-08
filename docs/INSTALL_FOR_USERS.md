@@ -42,12 +42,8 @@ The bootstrap script applies the public schema migrations, creates generated
 `TELEGRAM_WEBHOOK_SECRET`, `HEALTH_SYNC_TOKEN`, `DASHBOARD_READ_TOKEN`, and
 `DASHBOARD_TOGGLE_TOKEN` values if missing, and deploys the dashboard functions.
 
-It skips optional sample recipe/photo migrations by default. To include the
-sample-data migrations anyway:
-
-```sh
-npm run kit:backend -- --with-sample-data
-```
+Sample-data migrations are not used in this fork; `--with-sample-data` is a
+no-op kept for compatibility.
 
 ## 2. Add Required Backend Secrets
 
@@ -106,7 +102,6 @@ Supported lists:
 
 - Grocery: `grocery`, `groceries`, `shopping`, `market`
 - Workout: `workout`, `exercise`, `training`, `gym`
-- Meal notes: `meal`, `meals`, `menu`, `food`
 - Todo/chores: `todo`, `to-do`, `task`, `tasks`, `errand`, `errands`
 
 Add items:
@@ -186,54 +181,6 @@ Log a workout:
 workout done
 completed gym
 did exercise
-```
-
-### Today's Meal Plan
-
-Meal plan commands match saved recipe titles by partial title. Use these after
-you have recipes saved in the backend.
-
-Set or replace today's meal plan:
-
-```text
-set meal plan to Sample Breakfast Bowl and Sample Toast
-plan meals Sample Breakfast Bowl, Sample Smoothie
-meals today: Sample Toast + Sample Smoothie
-```
-
-Add another saved recipe to today's meal plan:
-
-```text
-add meal Sample Smoothie
-include Sample Toast in meals
-put Sample Breakfast Bowl on meal plan
-```
-
-Clear today's meal plan:
-
-```text
-clear meal plan
-reset meals today
-remove meals
-```
-
-### Saved Recipes
-
-Create or update a saved recipe. Calories, carbs, fat, and protein are required
-for the built-in parser; rating and ingredients are optional.
-
-```text
-add recipe Sample Wrap calories 420 carbs 45 fat 14 protein 28 rating 4 ingredients tortilla 1 piece, beans 100 g instructions roll and toast
-save meal Sample Smoothie kcal 180 c 28 f 4 p 6 rating 4.5
-create recipe Sample Bowl cal 360 carbs 48 fat 8 protein 24 ingredients yogurt 200 g, oats 20 g
-```
-
-Rate an existing recipe:
-
-```text
-rate Sample Wrap 4.5/5
-set rating for Sample Smoothie to 4
-give Sample Bowl a rating of 5 stars
 ```
 
 ## 4. Configure the Kindle Package

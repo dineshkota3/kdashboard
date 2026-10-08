@@ -23,14 +23,10 @@ const char* kDefaultUrl = "";
 const char* kDefaultEventsUrl = "";
 const char* kDefaultToggleUrl = "";
 const char* kDefaultCache = "/mnt/us/documents/kindle-dashboard-data.json";
-const char* kMealCoverPath = "/mnt/us/extensions/kindle-dashboard/assets/meal-planner-cover.pgm";
-const char* kMealCoverLocalPath = "kindle/kual/kindle-dashboard/assets/meal-planner-cover.pgm";
 const char* kChallengeCoverPath = "/mnt/us/extensions/kindle-dashboard/assets/challenge-75-day.pgm";
 const char* kChallengeCoverLocalPath = "kindle/kual/kindle-dashboard/assets/challenge-75-day.pgm";
 const char* kProfileCardPath = "/mnt/us/extensions/kindle-dashboard/assets/profile-placeholder.pgm";
 const char* kProfileCardLocalPath = "kindle/kual/kindle-dashboard/assets/profile-placeholder.pgm";
-const char* kRecipeAssetsPath = "/mnt/us/extensions/kindle-dashboard/assets/recipes";
-const char* kRecipeAssetsLocalPath = "kindle/kual/kindle-dashboard/assets/recipes";
 const int kDefaultIntervalSeconds = 3600;
 const char* kDefaultSleepWindow = "off";
 const long kMaxDashboardPayloadBytes = 512 * 1024;
@@ -39,7 +35,6 @@ const int kMaxRows = 28;
 const int kCardInnerWidth = 36;
 const int kMaxLists = 4;
 const int kMaxItems = 16;
-const int kMaxRecipes = 12;
 const int kBitmapFallbackWidth = 760;
 const int kBitmapFallbackHeight = 1024;
 const int kKindleStatusBarHeight = 66;
@@ -50,11 +45,6 @@ volatile sig_atomic_t g_manual_fetch_refresh = 0;
 int g_last_screen_width = kBitmapFallbackWidth;
 int g_last_screen_height = kBitmapFallbackHeight;
 int g_active_list = -1;
-int g_active_meal_planner = 0;
-int g_active_recipes = 0;
-int g_active_recipe = -1;
-int g_active_recipe_library = 0;
-int g_active_recipe_return_meal_planner = 0;
 int g_active_challenge = 0;
 int g_invert_images = 0;
 int g_day_offset = 0;
@@ -65,12 +55,8 @@ enum TouchAction {
   kTouchBack = 2,
   kTouchOpenList = 3,
   kTouchToggleItem = 4,
-  kTouchOpenMealPlanner = 5,
-  kTouchOpenRecipe = 6,
-  kTouchOpenRecipes = 7,
   kTouchHome = 8,
   kTouchOpenChallenge = 9,
-  kTouchOpenMealPlanRecipe = 10,
   kTouchPreviousDay = 11,
   kTouchNextDay = 12,
   kTouchToday = 13
@@ -87,31 +73,6 @@ struct List {
   char title[40];
   Item items[kMaxItems];
   int item_count;
-};
-
-const int kMaxRecipeIngredients = 8;
-
-struct RecipeIngredient {
-  const char* name;
-  const char* amount;
-};
-
-struct RecipeIngredientRecord {
-  char name[64];
-  char amount[32];
-};
-
-struct RecipeRecord {
-  char id[48];
-  char title[64];
-  char instructions[160];
-  RecipeIngredientRecord ingredients[kMaxRecipeIngredients];
-  int ingredient_count;
-  int calories;
-  int carbs;
-  int fat;
-  int protein;
-  int rating_tenths;
 };
 
 struct Dashboard {
@@ -133,10 +94,6 @@ struct Dashboard {
   char calories_unit[16];
   List lists[kMaxLists];
   int list_count;
-  RecipeRecord recipes[kMaxRecipes];
-  int recipe_count;
-  int meal_plan_recipe_indices[kMaxRecipes];
-  int meal_plan_count;
 };
 
 struct Options {
@@ -189,93 +146,11 @@ struct TouchRegion {
   int item_done;
 };
 
-struct MealPlanEntry {
-  const char* meal;
-  const char* title;
-  const char* time;
-  const char* recipe;
-  const char* photo_path;
-  const char* photo_fallback_path;
-  RecipeIngredient ingredients[kMaxRecipeIngredients];
-  int ingredient_count;
-  const char* steps;
-  int calories;
-  int carbs;
-  int fat;
-  int protein;
-};
-
-const MealPlanEntry kMealPlan[] = {
-  {
-    "BREAKFAST",
-    "SAVORY OATS",
-    "8:30 AM",
-    "OATS + EGG + GREENS",
-    kMealCoverPath,
-    kMealCoverLocalPath,
-    {
-      {"OATS", "1/2 CUP"},
-      {"EGG", "1"},
-      {"SPINACH", "1 CUP"},
-      {"LEMON", "1 WEDGE"}
-    },
-    4,
-    "SIMMER OATS. FOLD GREENS. TOP WITH EGG.",
-    410,
-    48,
-    14,
-    22
-  },
-  {
-    "LUNCH",
-    "CHICKPEA WRAP",
-    "1:00 PM",
-    "CHICKPEA + PESTO WRAP",
-    kMealCoverPath,
-    kMealCoverLocalPath,
-    {
-      {"CHICKPEAS", "3/4 CUP"},
-      {"PESTO", "1 TBSP"},
-      {"TORTILLA", "1 LARGE"},
-      {"CUCUMBER", "1/2 CUP"}
-    },
-    4,
-    "MASH CHICKPEAS. SPREAD PESTO. ROLL TIGHT.",
-    520,
-    62,
-    18,
-    24
-  },
-  {
-    "DINNER",
-    "PIZZA TOAST",
-    "7:30 PM",
-    "MELTY PIZZA TOAST",
-    kMealCoverPath,
-    kMealCoverLocalPath,
-    {
-      {"BREAD", "2 SLICES"},
-      {"SAUCE", "1/4 CUP"},
-      {"MOZZARELLA", "2 OZ"},
-      {"BASIL", "6 LEAVES"}
-    },
-    4,
-    "SAUCE BREAD. ADD TOPPINGS. TOAST UNTIL MELTY.",
-    610,
-    58,
-    26,
-    31
-  }
-};
-
-const int kMealPlanCount = static_cast<int>(sizeof(kMealPlan) / sizeof(kMealPlan[0]));
-
 const int kMaxTouchRegions = 32;
 TouchRegion g_touch_regions[kMaxTouchRegions];
 int g_touch_region_count = 0;
 TouchAction g_pending_action = kTouchNone;
 int g_pending_list_index = -1;
-int g_pending_recipe_index = -1;
 char g_pending_item_id[48];
 int g_pending_item_done = 0;
 int g_pending_touch_x = -1;
@@ -469,89 +344,6 @@ int parseItems(const char* list_start, const char* list_end, List* list) {
   return 1;
 }
 
-int parseRecipeIngredients(const char* recipe_start, const char* recipe_end, RecipeRecord* recipe) {
-  const char* ingredients_value = findKeyInRange(recipe_start, recipe_end, "ingredients");
-  if (!ingredients_value || *ingredients_value != '[') return 0;
-  const char* ingredients_end = matchingClose(ingredients_value, ']');
-  if (!ingredients_end || ingredients_end > recipe_end) return 0;
-
-  const char* cursor = ingredients_value + 1;
-  while (cursor < ingredients_end && recipe->ingredient_count < kMaxRecipeIngredients) {
-    const char* object_start = strchr(cursor, '{');
-    if (!object_start || object_start >= ingredients_end) break;
-    const char* object_end = matchingClose(object_start, '}');
-    if (!object_end || object_end > ingredients_end) break;
-
-    RecipeIngredientRecord* ingredient = &recipe->ingredients[recipe->ingredient_count];
-    extractString(object_start, object_end, "name", ingredient->name, sizeof(ingredient->name), "");
-    extractString(object_start, object_end, "amount", ingredient->amount, sizeof(ingredient->amount), "");
-    if (ingredient->name[0] || ingredient->amount[0]) recipe->ingredient_count++;
-    cursor = object_end + 1;
-  }
-  return 1;
-}
-
-int parseRecipes(const char* json, Dashboard* dashboard) {
-  const char* recipes_value = findKeyInRange(json, NULL, "recipes");
-  if (!recipes_value || *recipes_value != '[') return 0;
-  const char* recipes_end = matchingClose(recipes_value, ']');
-  if (!recipes_end) return 0;
-
-  const char* cursor = recipes_value + 1;
-  while (cursor < recipes_end && dashboard->recipe_count < kMaxRecipes) {
-    const char* object_start = strchr(cursor, '{');
-    if (!object_start || object_start >= recipes_end) break;
-    const char* object_end = matchingClose(object_start, '}');
-    if (!object_end || object_end > recipes_end) break;
-
-    RecipeRecord* recipe = &dashboard->recipes[dashboard->recipe_count];
-    extractString(object_start, object_end, "id", recipe->id, sizeof(recipe->id), "");
-    extractString(object_start, object_end, "title", recipe->title, sizeof(recipe->title), "");
-    extractString(object_start, object_end, "instructions", recipe->instructions, sizeof(recipe->instructions), "");
-    recipe->calories = extractInt(object_start, object_end, "total_calories", 0);
-    recipe->carbs = extractInt(object_start, object_end, "carbs_g", 0);
-    recipe->fat = extractInt(object_start, object_end, "fat_g", 0);
-    recipe->protein = extractInt(object_start, object_end, "protein_g", 0);
-    recipe->rating_tenths = extractScaledInt(object_start, object_end, "rating", 10, 0);
-    parseRecipeIngredients(object_start, object_end, recipe);
-    if (recipe->title[0]) dashboard->recipe_count++;
-    cursor = object_end + 1;
-  }
-  return 1;
-}
-
-int recipeIndexById(const Dashboard* dashboard, const char* id) {
-  if (!dashboard || !id || !id[0]) return -1;
-  for (int i = 0; i < dashboard->recipe_count; i++) {
-    if (strcmp(dashboard->recipes[i].id, id) == 0) return i;
-  }
-  return -1;
-}
-
-int parseMealPlan(const char* json, Dashboard* dashboard) {
-  const char* meal_plan_value = findKeyInRange(json, NULL, "meal_plan");
-  if (!meal_plan_value || *meal_plan_value != '[') return 0;
-  const char* meal_plan_end = matchingClose(meal_plan_value, ']');
-  if (!meal_plan_end) return 0;
-
-  const char* cursor = meal_plan_value + 1;
-  while (cursor < meal_plan_end && dashboard->meal_plan_count < kMaxRecipes) {
-    const char* object_start = strchr(cursor, '{');
-    if (!object_start || object_start >= meal_plan_end) break;
-    const char* object_end = matchingClose(object_start, '}');
-    if (!object_end || object_end > meal_plan_end) break;
-
-    char id[48];
-    extractString(object_start, object_end, "id", id, sizeof(id), "");
-    const int recipe_index = recipeIndexById(dashboard, id);
-    if (recipe_index >= 0) {
-      dashboard->meal_plan_recipe_indices[dashboard->meal_plan_count++] = recipe_index;
-    }
-    cursor = object_end + 1;
-  }
-  return 1;
-}
-
 int parseDashboard(const char* json, Dashboard* dashboard) {
   memset(dashboard, 0, sizeof(*dashboard));
   copyText(dashboard->steps_unit, sizeof(dashboard->steps_unit), "steps");
@@ -596,8 +388,6 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
     if (list->key[0] || list->title[0]) dashboard->list_count++;
     cursor = object_end + 1;
   }
-  parseRecipes(json, dashboard);
-  parseMealPlan(json, dashboard);
   return 1;
 }
 
@@ -927,52 +717,6 @@ void drawTextClipped(Canvas* canvas, int x, int y, int max_width, const char* te
   drawText(canvas, x, y, clipped, scale, color);
 }
 
-int drawTextWrapped(Canvas* canvas, int x, int y, int max_width, const char* text, int scale, unsigned char color, int max_lines) {
-  if (!text || !text[0] || max_lines <= 0) return 0;
-  char source[256];
-  copyText(source, sizeof(source), text);
-  const int max_chars = max_width / (6 * scale);
-  if (max_chars <= 0) return 0;
-
-  int lines = 0;
-  char line_text[128] = "";
-  char* cursor = source;
-  while (*cursor && lines < max_lines) {
-    while (*cursor && isspace(static_cast<unsigned char>(*cursor))) cursor++;
-    if (!*cursor) break;
-    char* word = cursor;
-    while (*cursor && !isspace(static_cast<unsigned char>(*cursor))) cursor++;
-    const char saved = *cursor;
-    *cursor = '\0';
-
-    const int line_len = static_cast<int>(strlen(line_text));
-    const int word_len = static_cast<int>(strlen(word));
-    if (line_len > 0 && line_len + 1 + word_len > max_chars) {
-      drawText(canvas, x, y + lines * (8 * scale + 6), line_text, scale, color);
-      lines++;
-      line_text[0] = '\0';
-    }
-    if (lines >= max_lines) break;
-    if (word_len > max_chars) {
-      char clipped[128];
-      copyText(clipped, sizeof(clipped), word);
-      clipped[max_chars] = '\0';
-      drawText(canvas, x, y + lines * (8 * scale + 6), clipped, scale, color);
-      lines++;
-    } else {
-      if (line_text[0]) strncat(line_text, " ", sizeof(line_text) - strlen(line_text) - 1);
-      strncat(line_text, word, sizeof(line_text) - strlen(line_text) - 1);
-    }
-
-    *cursor = saved;
-  }
-  if (line_text[0] && lines < max_lines) {
-    drawText(canvas, x, y + lines * (8 * scale + 6), line_text, scale, color);
-    lines++;
-  }
-  return lines;
-}
-
 void drawTextCentered(Canvas* canvas, int cx, int y, int max_width, const char* text, int scale, unsigned char color) {
   char clipped[128];
   copyText(clipped, sizeof(clipped), text);
@@ -1082,40 +826,6 @@ void freePgmCache() {
   g_pgm_cache_count = 0;
 }
 
-void drawPgmImage(Canvas* canvas, int x, int y, int w, int h, const char* primary_path, const char* fallback_path, int invert) {
-  int image_w = 0;
-  int image_h = 0;
-  const unsigned char* pixels = loadCachedPgmPixels(primary_path, fallback_path, &image_w, &image_h);
-  if (!pixels) {
-    strokeRect(canvas, x, y, w, h, 2, 0);
-    drawTextCentered(canvas, x + w / 2, y + h / 2 - 12, w - 20, "MEAL ART", 3, 0);
-    return;
-  }
-
-  fillRect(canvas, x, y, w, h, invert ? 0 : 255);
-
-  int draw_w = w;
-  int draw_h = h;
-  if (image_w * h > w * image_h) {
-    draw_h = (w * image_h) / image_w;
-  } else {
-    draw_w = (h * image_w) / image_h;
-  }
-  if (draw_w < 1) draw_w = 1;
-  if (draw_h < 1) draw_h = 1;
-
-  const int draw_x = x + (w - draw_w) / 2;
-  const int draw_y = y + (h - draw_h) / 2;
-  for (int yy = 0; yy < draw_h; yy++) {
-    const int source_y = (yy * image_h) / draw_h;
-    for (int xx = 0; xx < draw_w; xx++) {
-      const int source_x = (xx * image_w) / draw_w;
-      const unsigned char value = pixels[source_y * image_w + source_x];
-      setPixel(canvas, draw_x + xx, draw_y + yy, invert ? static_cast<unsigned char>(255 - value) : value);
-    }
-  }
-}
-
 void drawPgmImageCover(Canvas* canvas, int x, int y, int w, int h, const char* primary_path, const char* fallback_path, int invert) {
   int image_w = 0;
   int image_h = 0;
@@ -1174,43 +884,22 @@ void drawPgmImageCover(Canvas* canvas, int x, int y, int w, int h, const char* p
   }
 }
 
-void recipePhotoPath(const char* base_dir, const char* recipe_id, char* out, size_t out_size) {
-  char safe_id[64];
-  size_t j = 0;
-  for (size_t i = 0; recipe_id && recipe_id[i] && j + 1 < sizeof(safe_id); i++) {
-    const char ch = recipe_id[i];
-    if (isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_') safe_id[j++] = ch;
-  }
-  safe_id[j] = '\0';
-  if (!safe_id[0]) {
-    if (out_size > 0) out[0] = '\0';
-    return;
-  }
-  snprintf(out, out_size, "%s/%s.pgm", base_dir, safe_id);
-}
-
 int framebufferInvertForVisibleImage(int should_appear_flipped) {
   return g_invert_images && should_appear_flipped;
-}
-
-void drawRecipeLocalImage(Canvas* canvas, int x, int y, int w, int h, const RecipeRecord* recipe) {
-  char primary[192];
-  char fallback[192];
-  recipePhotoPath(kRecipeAssetsPath, recipe ? recipe->id : "", primary, sizeof(primary));
-  recipePhotoPath(kRecipeAssetsLocalPath, recipe ? recipe->id : "", fallback, sizeof(fallback));
-  drawPgmImageCover(canvas, x, y, w, h, primary, fallback, framebufferInvertForVisibleImage(1));
 }
 
 const char* displayListTitle(const List* list) {
   if (!list) return "";
   if (strcmp(list->key, "todo") == 0) return "CHORES";
+  if (strcmp(list->key, "workout") == 0) return "WORKOUT";
   if (strcmp(list->key, "grocery") == 0) return "GROCERY";
   return list->title[0] ? list->title : list->key;
 }
 
 const char* displayListTitleForIndex(const List* list, int list_index) {
   if (list_index == 0) return "CHORES";
-  if (list_index == 1) return "GROCERY";
+  if (list_index == 1) return "WORKOUT";
+  if (list_index == 2) return "GROCERY";
   return displayListTitle(list);
 }
 
@@ -1253,52 +942,6 @@ void formatTenths(int value, char* out, size_t size) {
   const int fraction = value < 0 ? -(value % 10) : value % 10;
   if (fraction == 0) snprintf(out, size, "%d", whole);
   else snprintf(out, size, "%d.%d", whole, fraction);
-}
-
-void drawStarIcon(Canvas* canvas, int x, int y, int scale, int filled) {
-  static const char* filled_mask[] = {
-    "......#......",
-    ".....###.....",
-    ".....###.....",
-    "#############",
-    ".###########.",
-    "..#########..",
-    "...#######...",
-    "...#######...",
-    "..###...###..",
-    ".##.......##.",
-    "##.........##"
-  };
-  static const char* empty_mask[] = {
-    "......#......",
-    ".....#.#.....",
-    ".....#.#.....",
-    "###..#.#..###",
-    ".##.....##..",
-    "..##...##...",
-    "...#...#....",
-    "...#...#....",
-    "..##...##...",
-    ".##.....##..",
-    "##.......##."
-  };
-  const char** mask = filled ? filled_mask : empty_mask;
-  for (int row = 0; row < 11; row++) {
-    for (int col = 0; mask[row][col]; col++) {
-      if (mask[row][col] == '#') fillRect(canvas, x + col * scale, y + row * scale, scale, scale, 0);
-    }
-  }
-}
-
-void drawStarRating(Canvas* canvas, int x, int y, int rating_tenths, int scale) {
-  int filled = (rating_tenths + 5) / 10;
-  if (filled < 0) filled = 0;
-  if (filled > 5) filled = 5;
-  const int star_w = 13 * scale;
-  const int gap = 4 * scale;
-  for (int i = 0; i < 5; i++) {
-    drawStarIcon(canvas, x + i * (star_w + gap), y, scale, i < filled);
-  }
 }
 
 void drawRadialMetricTenths(Canvas* canvas, int x, int y, int w, int h, const char* label, int value, int target, const char* unit) {
@@ -1431,16 +1074,6 @@ void drawListCard(Canvas* canvas, int x, int y, int w, int h, const List* list, 
   }
 }
 
-void drawMealPlannerTile(Canvas* canvas, int x, int y, int w, int h) {
-  strokeRect(canvas, x, y, w, h, 3, 0);
-  Rect tile_rect = {x, y, w, h};
-  addTouchRegion(tile_rect, kTouchOpenMealPlanner, -1, -1, "", 0);
-  drawPgmImageCover(canvas, x + 3, y + 3, w - 6, h - 6, kMealCoverPath, kMealCoverLocalPath, framebufferInvertForVisibleImage(0));
-  fillRect(canvas, x + 3, y + 3, w - 6, 50, 255);
-  line(canvas, x + 10, y + 53, x + w - 10, y + 53, 2, 0);
-  drawTextCentered(canvas, x + w / 2, y + 14, w - 24, "MEAL PLANNER", 4, 0);
-}
-
 void drawChallengeTile(Canvas* canvas, int x, int y, int size) {
   strokeRect(canvas, x, y, size, size, 3, 0);
   Rect tile_rect = {x, y, size, size};
@@ -1537,257 +1170,6 @@ void drawSubHeader(Canvas* canvas, int shell_x, int y, int shell_w, const char* 
   addTouchRegion(back_rect, kTouchBack, -1, -1, "", 0);
 }
 
-void drawMealPlannerDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
-
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "MEAL PLANNER");
-
-  const int cover_y = sub_y + 96;
-  strokeRect(canvas, shell_x + 18, cover_y, shell_w - 36, 188, 3, 0);
-  drawPgmImageCover(canvas, shell_x + 42, cover_y + 18, 250, 140, kMealCoverPath, kMealCoverLocalPath, framebufferInvertForVisibleImage(0));
-  drawTextClipped(canvas, shell_x + 320, cover_y + 32, shell_w - 352, "TODAY'S MEALS", 5, 0);
-  drawTextClipped(canvas, shell_x + 320, cover_y + 84, shell_w - 352, "EACH ROW OPENS", 3, 0);
-  drawTextClipped(canvas, shell_x + 320, cover_y + 118, shell_w - 352, "A RECIPE CARD", 3, 0);
-
-  const int recipes_card_y = cover_y + 206;
-  Rect recipes_rect = {shell_x + 18, recipes_card_y, shell_w - 36, 74};
-  strokeRect(canvas, recipes_rect.x, recipes_rect.y, recipes_rect.w, recipes_rect.h, 3, 0);
-  addTouchRegion(recipes_rect, kTouchOpenRecipes, -1, -1, "", 0);
-  drawTextClipped(canvas, recipes_rect.x + 20, recipes_rect.y + 18, recipes_rect.w - 260, "RECIPES", 5, 0);
-  char count_text[64];
-  snprintf(count_text, sizeof(count_text), "%d SAVED", dashboard->recipe_count);
-  drawTextClipped(canvas, recipes_rect.x + recipes_rect.w - 210, recipes_rect.y + 24, 180, count_text, 3, 0);
-
-  const int row_x = shell_x + 18;
-  const int row_w = shell_w - 36;
-  const int row_h = 82;
-  const int row_gap = 10;
-  const int first_y = recipes_card_y + 92;
-  if (dashboard->meal_plan_count == 0) {
-    Rect empty_rect = {row_x, first_y, row_w, 118};
-    strokeRect(canvas, empty_rect.x, empty_rect.y, empty_rect.w, empty_rect.h, 2, 0);
-    drawTextClipped(canvas, empty_rect.x + 18, empty_rect.y + 22, empty_rect.w - 36, "NO MEALS PLANNED", 4, 0);
-    drawTextClipped(canvas, empty_rect.x + 18, empty_rect.y + 66, empty_rect.w - 36, "SET TODAY'S MEAL PLAN VIA TELEGRAM", 2, 0);
-    return;
-  }
-  for (int i = 0; i < dashboard->meal_plan_count; i++) {
-    const int row_y = first_y + i * (row_h + row_gap);
-    if (row_y + row_h > shell_y + shell_h - 18) break;
-    const int recipe_index = dashboard->meal_plan_recipe_indices[i];
-    if (recipe_index < 0 || recipe_index >= dashboard->recipe_count) continue;
-    const RecipeRecord* recipe = &dashboard->recipes[recipe_index];
-    Rect row_rect = {row_x, row_y, row_w, row_h};
-    strokeRect(canvas, row_rect.x, row_rect.y, row_rect.w, row_rect.h, 2, 0);
-    addTouchRegion(row_rect, kTouchOpenMealPlanRecipe, -1, recipe_index, "", 0);
-    char meal_label[32];
-    snprintf(meal_label, sizeof(meal_label), "MEAL %d", i + 1);
-    drawTextClipped(canvas, row_x + 18, row_y + 14, 170, meal_label, 3, 0);
-    drawTextClipped(canvas, row_x + 208, row_y + 14, row_w - 360, recipe->title, 4, 0);
-    char macro_hint[96];
-    snprintf(macro_hint, sizeof(macro_hint), "%d CAL  C%d F%d P%d", recipe->calories, recipe->carbs, recipe->fat, recipe->protein);
-    drawTextClipped(canvas, row_x + 208, row_y + 52, row_w - 390, macro_hint, 2, 0);
-    drawStarRating(canvas, row_x + row_w - 190, row_y + 16, recipe->rating_tenths, 2);
-    drawTextClipped(canvas, row_x + row_w - 176, row_y + 52, 154, "[ RECIPE ]", 2, 0);
-  }
-}
-
-void drawRecipesDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
-
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "RECIPES");
-
-  const int gap = 10;
-  const int card_w = (shell_w - 36 - gap) / 2;
-  const int card_h = 132;
-  const int first_y = sub_y + 98;
-  for (int i = 0; i < dashboard->recipe_count && i < kMaxRecipes; i++) {
-    const int column = i % 2;
-    const int row = i / 2;
-    const int card_x = shell_x + 18 + column * (card_w + gap);
-    const int card_y = first_y + row * (card_h + gap);
-    if (card_y + card_h > shell_y + shell_h - 18) break;
-    Rect card_rect = {card_x, card_y, card_w, card_h};
-    strokeRect(canvas, card_rect.x, card_rect.y, card_rect.w, card_rect.h, 3, 0);
-    addTouchRegion(card_rect, kTouchOpenRecipe, -1, i, "", 0);
-    drawTextClipped(canvas, card_x + 14, card_y + 14, card_w - 28, dashboard->recipes[i].title, 3, 0);
-    line(canvas, card_x + 10, card_y + 54, card_x + card_w - 10, card_y + 54, 2, 0);
-    char macro_text[96];
-    snprintf(macro_text, sizeof(macro_text), "%d CAL C%d F%d P%d", dashboard->recipes[i].calories, dashboard->recipes[i].carbs, dashboard->recipes[i].fat, dashboard->recipes[i].protein);
-    drawTextClipped(canvas, card_x + 14, card_y + 72, card_w - 28, macro_text, 2, 0);
-    drawStarRating(canvas, card_x + 14, card_y + 102, dashboard->recipes[i].rating_tenths, 1);
-    drawTextClipped(canvas, card_x + card_w - 94, card_y + 104, 78, "[ OPEN ]", 2, 0);
-  }
-}
-
-void drawRecipeRecordDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status, int recipe_index) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
-
-  if (recipe_index < 0 || recipe_index >= dashboard->recipe_count) recipe_index = 0;
-  const RecipeRecord* recipe = &dashboard->recipes[recipe_index];
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "RECIPE");
-
-  const int card_x = shell_x + 18;
-  const int card_y = sub_y + 98;
-  const int card_w = shell_w - 36;
-  const int card_h = shell_y + shell_h - card_y - 18;
-  strokeRect(canvas, card_x, card_y, card_w, card_h, 3, 0);
-  drawTextClipped(canvas, card_x + 20, card_y + 22, card_w - 40, recipe->title, 5, 0);
-  line(canvas, card_x + 14, card_y + 76, card_x + card_w - 14, card_y + 76, 2, 0);
-  drawTextClipped(canvas, card_x + 20, card_y + 86, 126, "RATING", 3, 0);
-  drawStarRating(canvas, card_x + 164, card_y + 84, recipe->rating_tenths, 2);
-
-  const int content_x = card_x + 20;
-  const int content_w = card_w - 40;
-  const int top_y = card_y + 126;
-  const int column_gap = 14;
-  const int photo_w = (content_w - column_gap) / 2;
-  const int photo_h = photo_w;
-  const int macro_x = content_x + photo_w + column_gap;
-  const int macro_w = content_w - photo_w - column_gap;
-  strokeRect(canvas, content_x, top_y, photo_w, photo_h, 2, 0);
-  drawRecipeLocalImage(canvas, content_x + 8, top_y + 8, photo_w - 16, photo_h - 16, recipe);
-
-  const int macro_gap = 8;
-  const int macro_box_h = (photo_h - macro_gap) / 2;
-  const int macro_box_w = (macro_w - macro_gap) / 2;
-  const char* labels[4] = {"CAL", "CARBS", "FAT", "PROT"};
-  const int values[4] = {recipe->calories, recipe->carbs, recipe->fat, recipe->protein};
-  for (int i = 0; i < 4; i++) {
-    const int column = i % 2;
-    const int row = i / 2;
-    const int box_x = macro_x + column * (macro_box_w + macro_gap);
-    const int box_y = top_y + row * (macro_box_h + macro_gap);
-    strokeRect(canvas, box_x, box_y, macro_box_w, macro_box_h, 2, 0);
-    drawTextCentered(canvas, box_x + macro_box_w / 2, box_y + 22, macro_box_w - 8, labels[i], 2, 0);
-    char value_text[24];
-    snprintf(value_text, sizeof(value_text), i == 0 ? "%d" : "%dG", values[i]);
-    drawTextCentered(canvas, box_x + macro_box_w / 2, box_y + 64, macro_box_w - 8, value_text, 4, 0);
-  }
-
-  const int ingredients_title_y = top_y + photo_h + 28;
-  drawTextClipped(canvas, content_x, ingredients_title_y, content_w, "INGREDIENTS", 3, 0);
-  const int ingredient_y = ingredients_title_y + 40;
-  const int ingredient_row_h = 34;
-  const int amount_w = 180;
-  int ingredients_shown = 0;
-  for (int i = 0; i < recipe->ingredient_count && i < kMaxRecipeIngredients; i++) {
-    const int row_y = ingredient_y + i * ingredient_row_h;
-    if (row_y + ingredient_row_h > card_y + card_h - 112) break;
-    drawTextClipped(canvas, content_x + 4, row_y, content_w - amount_w - 12, recipe->ingredients[i].name, 3, 0);
-    drawTextClipped(canvas, card_x + card_w - amount_w - 20, row_y, amount_w, recipe->ingredients[i].amount, 3, 0);
-    ingredients_shown++;
-  }
-  const int steps_y = ingredient_y + ingredients_shown * ingredient_row_h + 24;
-  if (steps_y + 58 < card_y + card_h) {
-    drawTextClipped(canvas, content_x, steps_y, content_w, "STEPS", 3, 0);
-    drawTextWrapped(canvas, content_x, steps_y + 36, content_w, recipe->instructions, 2, 0, 4);
-  }
-}
-
-void drawRecipeDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status, int recipe_index) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
-
-  if (recipe_index < 0 || recipe_index >= kMealPlanCount) recipe_index = 0;
-  const MealPlanEntry* meal = &kMealPlan[recipe_index];
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "RECIPE");
-
-  const int card_x = shell_x + 18;
-  const int card_y = sub_y + 98;
-  const int card_w = shell_w - 36;
-  const int card_h = shell_y + shell_h - card_y - 18;
-  strokeRect(canvas, card_x, card_y, card_w, card_h, 3, 0);
-  drawTextClipped(canvas, card_x + 20, card_y + 22, card_w - 40, meal->title, 5, 0);
-  line(canvas, card_x + 14, card_y + 76, card_x + card_w - 14, card_y + 76, 2, 0);
-  drawTextClipped(canvas, card_x + 20, card_y + 92, card_w - 40, meal->recipe, 3, 0);
-
-  const int content_x = card_x + 20;
-  const int content_w = card_w - 40;
-  const int top_y = card_y + 142;
-  const int column_gap = 14;
-  const int photo_w = (content_w - column_gap) / 2;
-  const int photo_h = photo_w;
-  const int macro_x = content_x + photo_w + column_gap;
-  const int macro_w = content_w - photo_w - column_gap;
-  strokeRect(canvas, content_x, top_y, photo_w, photo_h, 2, 0);
-  drawPgmImageCover(canvas, content_x + 8, top_y + 8, photo_w - 16, photo_h - 16, meal->photo_path, meal->photo_fallback_path, framebufferInvertForVisibleImage(1));
-
-  const int macro_gap = 8;
-  const int macro_box_h = (photo_h - macro_gap) / 2;
-  const int macro_box_w = (macro_w - macro_gap) / 2;
-  const char* labels[4] = {"CAL", "CARBS", "FAT", "PROT"};
-  const int values[4] = {meal->calories, meal->carbs, meal->fat, meal->protein};
-  for (int i = 0; i < 4; i++) {
-    const int column = i % 2;
-    const int row = i / 2;
-    const int box_x = macro_x + column * (macro_box_w + macro_gap);
-    const int box_y = top_y + row * (macro_box_h + macro_gap);
-    strokeRect(canvas, box_x, box_y, macro_box_w, macro_box_h, 2, 0);
-    drawTextCentered(canvas, box_x + macro_box_w / 2, box_y + 22, macro_box_w - 8, labels[i], 2, 0);
-    char value_text[24];
-    snprintf(value_text, sizeof(value_text), i == 0 ? "%d" : "%dG", values[i]);
-    drawTextCentered(canvas, box_x + macro_box_w / 2, box_y + 64, macro_box_w - 8, value_text, 4, 0);
-  }
-
-  const int ingredients_title_y = top_y + photo_h + 28;
-  drawTextClipped(canvas, content_x, ingredients_title_y, content_w, "INGREDIENTS", 3, 0);
-  const int ingredient_y = ingredients_title_y + 42;
-  const int ingredient_row_h = 38;
-  const int amount_w = 160;
-  int ingredients_shown = 0;
-  for (int i = 0; i < meal->ingredient_count && i < kMaxRecipeIngredients; i++) {
-    const int row_y = ingredient_y + i * ingredient_row_h;
-    if (row_y + ingredient_row_h > card_y + card_h - 122) break;
-    drawTextClipped(canvas, card_x + 24, row_y, card_w - amount_w - 52, meal->ingredients[i].name, 3, 0);
-    drawTextClipped(canvas, card_x + card_w - amount_w - 20, row_y, amount_w, meal->ingredients[i].amount, 3, 0);
-    ingredients_shown++;
-  }
-  const int steps_y = ingredient_y + ingredients_shown * ingredient_row_h + 24;
-  if (steps_y + 68 < card_y + card_h) {
-    drawTextClipped(canvas, content_x, steps_y, content_w, "STEPS", 3, 0);
-    drawTextWrapped(canvas, content_x, steps_y + 44, content_w, meal->steps, 3, 0, 3);
-  }
-}
-
 void drawFullListDashboard(Canvas* canvas, const Dashboard* dashboard, int list_index, const char* status) {
   clearCanvas(canvas, 255);
   clearTouchRegions();
@@ -1874,19 +1256,6 @@ void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char
     drawChallengeDashboard(canvas, dashboard, status);
     return;
   }
-  if (g_active_recipe >= 0) {
-    if (g_active_recipe_library) drawRecipeRecordDashboard(canvas, dashboard, status, g_active_recipe);
-    else drawRecipeDashboard(canvas, dashboard, status, g_active_recipe);
-    return;
-  }
-  if (g_active_recipes) {
-    drawRecipesDashboard(canvas, dashboard, status);
-    return;
-  }
-  if (g_active_meal_planner) {
-    drawMealPlannerDashboard(canvas, dashboard, status);
-    return;
-  }
   if (g_active_list >= 0 && g_active_list < dashboard->list_count) {
     drawFullListDashboard(canvas, dashboard, g_active_list, status);
     return;
@@ -1936,7 +1305,6 @@ void addTouchRegion(Rect rect, TouchAction action, int list_index, int item_inde
     if (!containsPoint(&region->rect, x, y)) continue;
     g_pending_action = region->action;
     g_pending_list_index = region->list_index;
-    g_pending_recipe_index = region->item_index;
     copyText(g_pending_item_id, sizeof(g_pending_item_id), region->item_id);
     g_pending_item_done = region->item_done;
     setPendingTouchRect(region->rect);
@@ -1992,15 +1360,13 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
     drawListCard(canvas, shell_x + 10, lists_y, list_w, chores_h, &dashboard->lists[0], 0);
     drawChallengeTile(canvas, shell_x + 10, lists_y + chores_h + challenge_gap, challenge_side);
   }
-  if (dashboard->list_count > 1) {
+  if (dashboard->list_count > 2) {
     const int right_x = shell_x + 10 + list_w + gap;
-    int challenge_side = list_w;
-    if (lists_h < challenge_side + 128) challenge_side = lists_h - 128;
-    if (challenge_side < 160) challenge_side = 160;
-    int meal_tile_h = lists_h - challenge_side - gap;
-    const int grocery_h = lists_h - meal_tile_h - gap;
-    drawMealPlannerTile(canvas, right_x, lists_y, list_w, meal_tile_h);
-    drawListCard(canvas, right_x, lists_y + meal_tile_h + gap, list_w, grocery_h, &dashboard->lists[1], 1);
+    const int right_h = lists_h;
+    const int workout_h = (right_h - gap) / 2;
+    const int grocery_h = right_h - workout_h - gap;
+    drawListCard(canvas, right_x, lists_y, list_w, workout_h, &dashboard->lists[1], 1);
+    drawListCard(canvas, right_x, lists_y + workout_h + gap, list_w, grocery_h, &dashboard->lists[2], 2);
   }
 
   doubleRect(canvas, shell_x + 10, shell_y + shell_h - footer_h - 10, shell_w - 20, footer_h, 0);
@@ -2698,25 +2064,9 @@ int handlePendingTouch(const Options* options) {
 
   if (action == kTouchBack) {
     fprintf(stderr, "touch=back\n");
-    if (g_active_recipe >= 0) {
-      g_active_recipe = -1;
-      if (g_active_recipe_return_meal_planner) {
-        g_active_recipe_return_meal_planner = 0;
-        g_active_recipe_library = 0;
-        g_active_meal_planner = 1;
-      } else if (g_active_recipe_library) {
-        g_active_recipe_library = 0;
-        g_active_recipes = 1;
-      } else {
-        g_active_meal_planner = 1;
-      }
-    } else if (g_active_recipes) {
-      g_active_recipes = 0;
-      g_active_meal_planner = 1;
-    } else if (g_active_challenge) {
+    if (g_active_challenge) {
       g_active_challenge = 0;
     } else {
-      g_active_meal_planner = 0;
       g_active_list = -1;
     }
     return 1;
@@ -2725,88 +2075,20 @@ int handlePendingTouch(const Options* options) {
   if (action == kTouchHome) {
     fprintf(stderr, "touch=home\n");
     g_active_list = -1;
-    g_active_meal_planner = 0;
-    g_active_recipes = 0;
-    g_active_recipe = -1;
-    g_active_recipe_library = 0;
-    g_active_recipe_return_meal_planner = 0;
     g_active_challenge = 0;
     return 1;
   }
 
   if (action == kTouchOpenList) {
     fprintf(stderr, "touch=open-list index=%d\n", g_pending_list_index);
-    g_active_meal_planner = 0;
-    g_active_recipes = 0;
-    g_active_recipe = -1;
-    g_active_recipe_library = 0;
-    g_active_recipe_return_meal_planner = 0;
     g_active_challenge = 0;
     g_active_list = g_pending_list_index;
-    return 1;
-  }
-
-  if (action == kTouchOpenMealPlanner) {
-    fprintf(stderr, "touch=open-meal-planner\n");
-    g_active_list = -1;
-    g_active_recipes = 0;
-    g_active_recipe = -1;
-    g_active_recipe_library = 0;
-    g_active_recipe_return_meal_planner = 0;
-    g_active_challenge = 0;
-    g_active_meal_planner = 1;
-    return 1;
-  }
-
-  if (action == kTouchOpenRecipe) {
-    fprintf(stderr, "touch=open-recipe index=%d\n", g_pending_recipe_index);
-    g_active_list = -1;
-    g_active_challenge = 0;
-    if (g_active_recipes) {
-      g_active_meal_planner = 0;
-      g_active_recipe_library = 1;
-      g_active_recipe_return_meal_planner = 0;
-    } else {
-      g_active_meal_planner = 1;
-      g_active_recipe_library = 0;
-      g_active_recipe_return_meal_planner = 0;
-    }
-    g_active_recipe = g_pending_recipe_index;
-    return 1;
-  }
-
-  if (action == kTouchOpenMealPlanRecipe) {
-    fprintf(stderr, "touch=open-meal-plan-recipe index=%d\n", g_pending_recipe_index);
-    g_active_list = -1;
-    g_active_challenge = 0;
-    g_active_recipes = 0;
-    g_active_meal_planner = 0;
-    g_active_recipe_library = 1;
-    g_active_recipe_return_meal_planner = 1;
-    g_active_recipe = g_pending_recipe_index;
-    return 1;
-  }
-
-  if (action == kTouchOpenRecipes) {
-    fprintf(stderr, "touch=open-recipes\n");
-    g_active_list = -1;
-    g_active_meal_planner = 0;
-    g_active_recipe = -1;
-    g_active_recipe_library = 0;
-    g_active_recipe_return_meal_planner = 0;
-    g_active_challenge = 0;
-    g_active_recipes = 1;
     return 1;
   }
 
   if (action == kTouchOpenChallenge) {
     fprintf(stderr, "touch=open-challenge\n");
     g_active_list = -1;
-    g_active_meal_planner = 0;
-    g_active_recipes = 0;
-    g_active_recipe = -1;
-    g_active_recipe_library = 0;
-    g_active_recipe_return_meal_planner = 0;
     g_active_challenge = 1;
     return 1;
   }
@@ -3134,24 +2416,14 @@ void handleSignal(int) {
 void applyInitialView(const char* view) {
   if (!view || !view[0]) return;
   g_active_list = -1;
-  g_active_meal_planner = 0;
-  g_active_recipes = 0;
-  g_active_recipe = -1;
-  g_active_recipe_library = 0;
   g_active_challenge = 0;
   if (strcmp(view, "challenge") == 0) g_active_challenge = 1;
-  else if (strcmp(view, "recipe") == 0) {
-    g_active_recipes = 1;
-    g_active_recipe = 0;
-    g_active_recipe_library = 1;
-  } else if (strcmp(view, "meal-recipe") == 0) {
-    g_active_meal_planner = 1;
-    g_active_recipe = 0;
-    g_active_recipe_library = 0;
-  } else if (strcmp(view, "chores") == 0) {
+  else if (strcmp(view, "chores") == 0) {
     g_active_list = 0;
-  } else if (strcmp(view, "grocery") == 0) {
+  } else if (strcmp(view, "workout") == 0) {
     g_active_list = 1;
+  } else if (strcmp(view, "grocery") == 0) {
+    g_active_list = 2;
   }
 }
 
@@ -3209,7 +2481,7 @@ int parseOptions(int argc, char** argv, Options* options) {
     else if (strcmp(argv[i], "--save-pgm") == 0 && i + 1 < argc) copyText(options->save_pgm, sizeof(options->save_pgm), argv[++i]);
     else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       printf("Usage: %s [--url URL] [--events-url URL] [--toggle-url URL] [--read-token TOKEN] [--toggle-token TOKEN] [--cache PATH] [--interval SECONDS] [--sleep-window HH:MM-HH:MM|off] [--once] [--invert-images]\n", argv[0]);
-      printf("       %s --render PATH [--view challenge|recipe|meal-recipe|chores|grocery] [--dump-pgm PATH] [--dump-size WIDTHxHEIGHT] [--save-pgm PATH]\n", argv[0]);
+      printf("       %s --render PATH [--view challenge|chores|workout|grocery] [--dump-pgm PATH] [--dump-size WIDTHxHEIGHT] [--save-pgm PATH]\n", argv[0]);
       exit(0);
     } else {
       fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
