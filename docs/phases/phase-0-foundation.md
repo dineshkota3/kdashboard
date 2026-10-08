@@ -159,4 +159,11 @@ npm run native:check      # builds kindle-dashboard-local, renders fixtures/dash
 
 ## 6. Results log
 
-_Update this section as work happens: dates, command outputs, deviations from plan._
+- **2026-10-08 — code strip complete** (commit `fbfe376`, branch `fork/phase-0-strip-meals`):
+  - 9 meal/recipe migrations deleted; `001_planner_lists.sql` + RLS migration trimmed; bootstrap migration list updated (sample-data list now empty).
+  - `telegram-webhook.ts`: meal/recipe types, actions, parsers, validators, appliers, prompt lines removed (987 → ~570 lines). Heuristic parser intact.
+  - `kindle-dashboard-data.ts` / `kindle-dashboard-events.ts`: recipes/meal_plan removed; `workout` added to lists queries; payload order `todo, workout, grocery`; version hashes updated.
+  - `kindle_dashboard.cpp`: recipe structs/parsers/screens/touch actions/star rating/meal assets removed; home grid right column = Workout + Grocery; `applyInitialView` views now `challenge|chores|workout|grocery`; renders clean (`-Wall -Wextra -Wpedantic`, zero warnings, dead helpers removed).
+  - Fixture updated with workout list; **visual render verified** (760×1024 dump: CHORES + challenge left, WORKOUT + GROCERY right).
+  - README / INSTALL_FOR_USERS / SETUP_WITH_ASSISTANT meal sections removed; repo-wide grep for meal/recipe = 0 hits.
+- **Pending (needs user accounts):** InsForge login + project create, `npm run kit:backend`, BotFather bot token, `telegram:chat-id` + `telegram:configure`, then the Telegram + payload verification checklists.
