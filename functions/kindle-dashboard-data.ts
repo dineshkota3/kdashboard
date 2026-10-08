@@ -99,6 +99,7 @@ export default async function(req: Request): Promise<Response> {
     const payload = await loadDashboardPayload(requestedDate);
     return jsonResponse(payload);
   } catch (error) {
+    console.error("kindle-dashboard-data error", JSON.stringify(error)?.slice(0, 600), errorMessage(error));
     return jsonResponse({ ok: false, error: errorMessage(error) }, 500);
   } finally {
     logTiming("kindle-dashboard-data", { total_ms: elapsedMs(requestStarted) });
