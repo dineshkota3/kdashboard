@@ -151,8 +151,8 @@ Examples:
 
 **AI Parsing**
 
-The Telegram message is sent to OpenAI with a strict instruction: convert this
-message into one JSON action.
+The Telegram message is sent to Z.ai (glm-4.7) with a strict instruction:
+convert this message into one JSON action.
 
 AI parsing handles flexible language.
 
@@ -162,14 +162,14 @@ Code:
 
 **Deterministic parsing**
 
-If OpenAI is missing, fails, or returns invalid JSON, the backend uses
+If Z.ai is missing, fails, or returns invalid JSON, the backend uses
 handwritten rules in the code.
 
 Deterministic parsing follows hardcoded rules.
 
 Either way, the backend validates the result before database changes.
 
-The parser tries a fast deterministic pass, then OpenAI, then deterministic
+The parser tries a fast deterministic pass, then Z.ai, then deterministic
 fallback:
 
 ```ts
@@ -177,12 +177,12 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
   const fastAction = parseFastHeuristicMessage(message);
   if (fastAction) return fastAction;
 
-  const openAiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!openAiKey) {
+  const zaiKey = Deno.env.get("ZAI_API_KEY");
+  if (!zaiKey) {
     return parseMessageHeuristically(message);
   }
 
-  // OpenAI response is parsed and validated before any database write.
+  // Z.ai response is parsed and validated before any database write.
 }
 ```
 

@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   parseFastHeuristicMessage,
   parseMessageHeuristically,
-  validateTelegramAction
+  validateTelegramAction,
+  PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
 // ---- planner: add ----
@@ -203,4 +205,25 @@ test("validateTelegramAction accepts challenge action", () => {
   const a = validateTelegramAction({ kind: "challenge", action: "add_water", value: 1 });
   assert.ok(a);
   assert.equal((a as any).action, "add_water");
+});
+
+test("validateTelegramAction rejects kind none (LLM no-action guard)", () => {
+  assert.equal(validateTelegramAction({ kind: "none" }), null);
+});
+
+// ---- Z.ai LLM prompt contract (phase 2) ----
+
+test("PLANNER_SYSTEM_PROMPT covers planner lists, no meal/recipe schema", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /grocery\|workout\|todo/);
+  assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /meal|recipe/i);
+});
+
+test("webhook source uses Z.ai endpoint and env names, not OpenAI", () => {
+  const source = readFileSync(new URL("./telegram-webhook.ts", import.meta.url), "utf8");
+  assert.match(source, /https:\/\/api\.z\.ai\/api\/coding\/paas\/v4\/chat\/completions/);
+  assert.match(source, /ZAI_API_KEY/);
+  assert.match(source, /ZAI_MODEL/);
+  assert.doesNotMatch(source, /api\.openai\.com/);
+  assert.doesNotMatch(source, /OPENAI_API_KEY/);
+  assert.doesNotMatch(source, /OPENAI_MODEL/);
 });

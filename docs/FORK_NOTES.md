@@ -3,7 +3,7 @@
 Fork of `thecodedose/kdashboard`, customized for:
 - Kindle Paperwhite 11th gen (PW5), firmware 5.18.6, KUAL Next
 - InsForge hosted free tier (bring-your-own-backend)
-- Z.ai glm-4.6 for NLP (no OpenAI)
+- Z.ai glm-4.7 for NLP (no OpenAI; Coding Plan endpoint `api/coding/paas/v4`)
 - Google Calendar integration (Phase 3)
 - Apple Watch health via HealthSyncCompanion (Phase 4)
 - Samsung SmartThings appliance status + cycle alert (Phase 5)
@@ -16,7 +16,7 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | Area | Change | Phase |
 |---|---|---|
 | Migrations | 9 meal/recipe/sample migrations deleted; `001_planner_lists.sql` trimmed to `grocery/workout/todo` | 0 |
-| `functions/telegram-webhook.ts` | Meal/recipe actions+parsers removed; OpenAI → Z.ai (`ZAI_API_KEY`, `ZAI_MODEL=glm-4.6`); calendar `create_event` action added | 0, 2, 3 |
+| `functions/telegram-webhook.ts` | Meal/recipe actions+parsers removed; OpenAI → Z.ai (`ZAI_API_KEY`, `ZAI_MODEL=glm-4.7`, Coding Plan endpoint); calendar `create_event` action added | 0, 2, 3 |
 | `functions/kindle-dashboard-data.ts` | recipes/meal_plan removed; `workout` added to lists; `calendar` + `appliances` sections + hash members | 0, 3, 5 |
 | `functions/kindle-dashboard-events.ts` | recipes/meal_plan removed; workout list; (no outbound API calls here — SSE stays DB-only) | 0 |
 | `kindle/native/src/kindle_dashboard.cpp` | Recipe/meal structs/parsers/screens/touch-actions deleted; home grid right column = Workout + Grocery; `drawCalendarCard` + `drawApplianceCard` + optional exercise radial | 0, 1, 3, 4b, 5 |

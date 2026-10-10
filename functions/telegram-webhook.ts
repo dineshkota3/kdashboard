@@ -91,34 +91,34 @@ export default async function(req: Request): Promise<Response> {
   return jsonResponse({ ok: true, action, summary });
 }
 
+export const PLANNER_SYSTEM_PROMPT = [
+  "You parse one Telegram dashboard message into strict JSON and respond with only the JSON object.",
+  "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
+  "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
+  "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
+  "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
+].join(" ");
+
 async function parseTelegramMessage(message: string): Promise<TelegramAction | null> {
   const fastAction = parseFastHeuristicMessage(message);
   if (fastAction) return fastAction;
 
-  const openAiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!openAiKey) {
+  const zaiKey = Deno.env.get("ZAI_API_KEY");
+  if (!zaiKey) {
     return parseMessageHeuristically(message);
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetch("https://api.z.ai/api/coding/paas/v4/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${openAiKey}`,
+      "Authorization": `Bearer ${zaiKey}`,
       "Content-Type": "application/json"
     },
+    signal: AbortSignal.timeout(20000),
     body: JSON.stringify({
-      model: Deno.env.get("OPENAI_MODEL") || "gpt-4o-mini",
+      model: Deno.env.get("ZAI_MODEL") || "glm-4.7",
       messages: [
-        {
-          role: "system",
-          content:
-            [
-              "Parse one Telegram dashboard message into strict JSON.",
-              "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
-              "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
-              "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout."
-            ].join(" ")
-        },
+        { role: "system", content: PLANNER_SYSTEM_PROMPT },
         { role: "user", content: message }
       ],
       response_format: { type: "json_object" },
@@ -127,6 +127,8 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
   });
 
   if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    console.warn(`zai_parse_failed status=${response.status} body=${errBody.slice(0, 300)}`);
     return parseMessageHeuristically(message);
   }
 
@@ -136,11 +138,16 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
     return parseMessageHeuristically(message);
   }
 
+  let parsed: unknown;
   try {
-    return validateTelegramAction(JSON.parse(content)) ?? parseMessageHeuristically(message);
+    parsed = JSON.parse(content);
   } catch {
     return parseMessageHeuristically(message);
   }
+  if (parsed && typeof parsed === "object" && (parsed as { kind?: unknown }).kind === "none") {
+    return null;
+  }
+  return validateTelegramAction(parsed) ?? parseMessageHeuristically(message);
 }
 
 async function applyTelegramAction(admin: any, action: TelegramAction): Promise<string> {
