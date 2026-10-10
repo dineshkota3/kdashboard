@@ -78,7 +78,7 @@ const LIST_TITLES: Record<ListKey, string> = {
   workout: "Workout",
   grocery: "Grocery"
 };
-const COMPLETED_ITEM_HIDE_AFTER_MS = 24 * 60 * 60 * 1000;
+const COMPLETED_ITEM_HIDE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
 export default async function(req: Request): Promise<Response> {
   const requestStarted = timeMs();
@@ -203,7 +203,10 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       title: LIST_TITLES[key],
       items: plannerItems
         .filter((item) => item.list_key === key)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .sort((a, b) => {
+          if (a.done !== b.done) return a.done ? 1 : -1;
+          return b.created_at.localeCompare(a.created_at);
+        })
         .map((item) => ({
           id: item.id,
           text: item.text,
