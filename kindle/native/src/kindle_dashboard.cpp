@@ -23,8 +23,6 @@ const char* kDefaultUrl = "";
 const char* kDefaultEventsUrl = "";
 const char* kDefaultToggleUrl = "";
 const char* kDefaultCache = "/mnt/us/documents/kindle-dashboard-data.json";
-const char* kChallengeCoverPath = "/mnt/us/extensions/kindle-dashboard/assets/challenge-75-day.pgm";
-const char* kChallengeCoverLocalPath = "kindle/kual/kindle-dashboard/assets/challenge-75-day.pgm";
 const char* kProfileCardPath = "/mnt/us/extensions/kindle-dashboard/assets/profile-placeholder.pgm";
 const char* kProfileCardLocalPath = "kindle/kual/kindle-dashboard/assets/profile-placeholder.pgm";
 const int kDefaultIntervalSeconds = 3600;
@@ -75,6 +73,14 @@ struct List {
   int item_count;
 };
 
+struct CalendarEvent {
+  char title[96];
+  char start_iso[64];
+  int all_day;
+};
+
+const int kMaxCalendarEvents = 4;
+
 struct Dashboard {
   char generated_at[40];
   char version[32];
@@ -94,6 +100,9 @@ struct Dashboard {
   char calories_unit[16];
   List lists[kMaxLists];
   int list_count;
+  CalendarEvent calendar_events[kMaxCalendarEvents];
+  int calendar_count;
+  int calendar_connected;
 };
 
 struct Options {
@@ -387,6 +396,36 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
     parseItems(object_start, object_end, list);
     if (list->key[0] || list->title[0]) dashboard->list_count++;
     cursor = object_end + 1;
+  }
+
+  const char* calendar_value = findKeyInRange(json, NULL, "calendar");
+  if (calendar_value && *calendar_value == '{') {
+    const char* calendar_end = matchingClose(calendar_value, '}');
+    if (calendar_end) {
+      char status[24];
+      extractString(calendar_value, calendar_end, "status", status, sizeof(status), "");
+      dashboard->calendar_connected = strcmp(status, "ok") == 0;
+
+      const char* events_value = findKeyInRange(calendar_value, calendar_end, "events");
+      if (events_value && *events_value == '[') {
+        const char* events_end = matchingClose(events_value, ']');
+        if (events_end) {
+          const char* events_cursor = events_value + 1;
+          while (events_cursor < events_end && dashboard->calendar_count < kMaxCalendarEvents) {
+            const char* event_start = strchr(events_cursor, '{');
+            if (!event_start || event_start >= events_end) break;
+            const char* event_end = matchingClose(event_start, '}');
+            if (!event_end || event_end > events_end) break;
+            CalendarEvent* event = &dashboard->calendar_events[dashboard->calendar_count];
+            extractString(event_start, event_end, "title", event->title, sizeof(event->title), "");
+            extractString(event_start, event_end, "start_iso", event->start_iso, sizeof(event->start_iso), "");
+            event->all_day = extractBool(event_start, event_end, "all_day", 0);
+            if (event->title[0] && event->start_iso[0]) dashboard->calendar_count++;
+            events_cursor = event_end + 1;
+          }
+        }
+      }
+    }
   }
   return 1;
 }
@@ -1026,6 +1065,79 @@ void drawImageCard(Canvas* canvas, int x, int y, int w, int h, const char* image
   drawPgmImageCover(canvas, x + 2, y + 2, w - 4, h - 4, image_path, fallback_path, framebufferInvertForVisibleImage(1));
 }
 
+void formatCalendarEventRow(const CalendarEvent* event, char* out, size_t size) {
+  static const char* months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+  static const char* days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+  char title_upper[96];
+  upperCopy(title_upper, sizeof(title_upper), event->title);
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  if (sscanf(event->start_iso, "%4d-%2d-%2d", &year, &month, &day) != 3 || month < 1 || month > 12 || day < 1 || day > 31) {
+    snprintf(out, size, "%.80s", title_upper);
+    return;
+  }
+  int y = year;
+  int m = month;
+  if (m < 3) {
+    m += 12;
+    y--;
+  }
+  const int k = y % 100;
+  const int j = y / 100;
+  const int h = (day + (13 * (m + 1)) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+  const int weekday = (h + 6) % 7;
+
+  if (event->all_day || !strchr(event->start_iso, 'T')) {
+    snprintf(out, size, "%s %s %d ALL DAY - %.60s", days[weekday], months[month - 1], day, title_upper);
+    return;
+  }
+
+  int hour = 0;
+  int minute = 0;
+  if (sscanf(event->start_iso, "%4d-%2d-%2dT%2d:%2d", &year, &month, &day, &hour, &minute) != 5) {
+    snprintf(out, size, "%s %s %d - %.60s", days[weekday], months[month - 1], day, title_upper);
+    return;
+  }
+  const char* meridiem = hour >= 12 ? "P" : "A";
+  int hour12 = hour % 12;
+  if (hour12 == 0) hour12 = 12;
+  char time_part[12];
+  if (minute == 0) {
+    snprintf(time_part, sizeof(time_part), "%d%s", hour12, meridiem);
+  } else {
+    snprintf(time_part, sizeof(time_part), "%d:%02d%s", hour12, minute, meridiem);
+  }
+  snprintf(out, size, "%s %s %d %s - %.60s", days[weekday], months[month - 1], day, time_part, title_upper);
+}
+
+void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const Dashboard* dashboard) {
+  strokeRect(canvas, x, y, w, h, 3, 0);
+  drawTextClipped(canvas, x + 18, y + 10, 300, "CALENDAR", 4, 0);
+  line(canvas, x + 10, y + 46, x + w - 10, y + 46, 2, 0);
+
+  int row_capacity = (h - 60) / 34;
+  if (row_capacity < 1) row_capacity = 1;
+  if (row_capacity > kMaxCalendarEvents) row_capacity = kMaxCalendarEvents;
+
+  if (!dashboard->calendar_connected) {
+    drawTextClipped(canvas, x + 18, y + 56, w - 36, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
+    return;
+  }
+  if (dashboard->calendar_count == 0) {
+    drawTextClipped(canvas, x + 18, y + 56, w - 36, "NO UPCOMING EVENTS", 3, 0);
+    return;
+  }
+
+  const int shown = dashboard->calendar_count < row_capacity ? dashboard->calendar_count : row_capacity;
+  for (int i = 0; i < shown; i++) {
+    char row[160];
+    formatCalendarEventRow(&dashboard->calendar_events[i], row, sizeof(row));
+    drawTextClipped(canvas, x + 18, y + 54 + i * 34, w - 36, row, 3, 0);
+  }
+}
+
 void drawListCard(Canvas* canvas, int x, int y, int w, int h, const List* list, int list_index) {
   strokeRect(canvas, x, y, w, h, 3, 0);
   Rect card_rect = {x, y, w, h};
@@ -1335,7 +1447,10 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   drawRadialMetric(canvas, shell_x + 10 + (stat_w + gap) * 2, stat_y, stat_w, stat_h, "CALORIES", dashboard->calories, dashboard->calories_target, dashboard->calories_unit);
 
   const int footer_h = 44;
-  const int lists_y = stat_y + stat_h + gap;
+  const int cal_y = stat_y + stat_h + gap;
+  const int cal_h = shell_h < 900 ? 130 : 200;
+  drawCalendarCard(canvas, shell_x + 10, cal_y, shell_w - 20, cal_h, dashboard);
+  const int lists_y = cal_y + cal_h + gap;
   const int lists_h = shell_y + shell_h - lists_y - footer_h - gap - 10;
   const int list_w = (shell_w - 20 - gap) / 2;
   if (dashboard->list_count > 0) {

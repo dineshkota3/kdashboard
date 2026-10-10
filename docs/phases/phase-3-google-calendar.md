@@ -1,6 +1,6 @@
 # Phase 3 — Google Calendar (Dashboard Panel + Telegram Booking)
 
-> Status: ☐ Not started
+> Status: ◐ In progress (all code shipped + deployed 2026-10-10; panel renders `NOT CONNECTED`; OAuth connect pending Google Cloud setup)
 > Gate: Phase 4 starts only after a bot-created event appears in Google Calendar AND on the Kindle.
 
 ## Goal
@@ -115,4 +115,12 @@ calendar: {
 
 ## 6. Results log
 
-_Record the consent-screen decisions, publish-to-production date, and any prompt tuning for date resolution._
+- **2026-10-10 — All code shipped, deployed, and rendering:**
+  - `migrations/20260710000000_create-google-calendar-state.sql` applied; `google-calendar-oauth` + calendar read path (dashboard-data) + `create_event` action (webhook) deployed.
+  - Webhook: `CalendarEventAction` type, `validateEventAction` (ISO/{date,time}/date-only normalization, IST `+05:30`), exported `parseEventHeuristically(message, now)` (pure, IST math, `/event` + schedule/book/appointment triggers, past times roll +7d), dispatcher + `applyCalendarCreateAction` (token refresh inline, events.insert, `Scheduled: Title — Fri Oct 10, 3:00 PM IST` replies). LLM prompt extended with the event schema; current IST datetime injected at request time (static `PLANNER_SYSTEM_PROMPT` contract preserved).
+  - Guard: event heuristic only fires when the message has NO explicit list keyword, so "add book to groceries" stays a planner item even in fallback mode.
+  - Renderer: `CalendarEvent` struct + tolerant `parseCalendar` (absent key → counts 0) + `drawCalendarCard` — full-width strip between the gauges and the two list cards (replaces the doc's "below workout" slot, which Phase 1 removed), up to 4 rows `FRI OCT 10 3:00P - DENTIST`, `ALL DAY` variant, `NOT CONNECTED` / `NO UPCOMING EVENTS` placeholders. Fixture extended with 3 events; render verified locally at 1236×1648 (weekday math correct) and on-device (`NOT CONNECTED` state).
+  - `scripts/bootstrap-insforge-kit.mjs`: migration + oauth function added.
+  - Tests: 41 unit (+11 calendar: heuristic parse incl. IST rollovers, validator ISO/{date,time}/date-only/rejections, fast-path routing) + integration, all green. Backend verified live: `GET kindle-dashboard-data` → `calendar:{status:"not_connected",events:[]}`, version hash includes calendar.
+  - Ops note: Kindle DHCP lease changed mid-session (`.110`→`.111`); SSH config updated. Cable-plug incident also polluted the running 24h battery test — re-verify tomorrow's reading with that in mind.
+  - **PENDING:** Google Cloud setup (Calendar API + OAuth client + `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` secrets) → OAuth consent → verification checklist. Reminder: publish the consent app to Production after initial testing or the refresh token dies weekly.

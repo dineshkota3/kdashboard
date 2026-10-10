@@ -36,6 +36,27 @@ type ChallengeLog = {
   updated_at: string;
 };
 
+type CalendarEvent = {
+  title: string;
+  start_iso: string;
+  end_iso: string;
+  all_day: boolean;
+  location: string | null;
+};
+
+type CalendarPayload = {
+  status: "ok" | "not_connected" | "unavailable";
+  events: CalendarEvent[];
+};
+
+type GoogleCalendarState = {
+  refresh_token: string | null;
+  access_token: string | null;
+  token_expiry: string | null;
+  calendar_id: string | null;
+  timezone: string | null;
+};
+
 type DashboardPayload = {
   ok: true;
   generated_at: string;
@@ -71,6 +92,7 @@ type DashboardPayload = {
       updated_at: string;
     }>;
   }>;
+  calendar: CalendarPayload;
 };
 
 const LIST_TITLES: Record<ListKey, string> = {
@@ -166,6 +188,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   const buildStarted = timeMs();
   const staleCompletedCutoff = Date.now() - COMPLETED_ITEM_HIDE_AFTER_MS;
   const plannerItems = (items as PlannerItem[]).filter((item) => shouldShowPlannerItem(item, staleCompletedCutoff));
+  const calendar = await loadCalendarPayload(admin);
   const health = firstRow<HealthSummary>(healthRows);
   const challenge = firstRow<ChallengeLog>(challengeRows);
   const challengeStart = firstRow<Pick<ChallengeLog, "date">>(challengeStartRows);
@@ -213,7 +236,8 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
           done: item.done,
           updated_at: item.updated_at
         }))
-    }))
+    })),
+    calendar
   };
 
   const payload = {
@@ -221,7 +245,8 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     version: hashText(JSON.stringify({
       health: payloadWithoutVersion.health,
       challenge: payloadWithoutVersion.challenge,
-      lists: payloadWithoutVersion.lists
+      lists: payloadWithoutVersion.lists,
+      calendar: payloadWithoutVersion.calendar
     }))
   };
   logTiming("kindle-dashboard-data", {
@@ -303,6 +328,124 @@ function shouldShowPlannerItem(item: PlannerItem, staleCompletedCutoff: number):
   const updatedAt = Date.parse(item.updated_at);
   if (!Number.isFinite(updatedAt)) return true;
   return updatedAt > staleCompletedCutoff;
+}
+
+async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
+  try {
+    const { data: stateRows, error: stateError } = await admin.database
+      .from("google_calendar_state")
+      .select("refresh_token,access_token,token_expiry,calendar_id,timezone")
+      .eq("id", 1)
+      .limit(1);
+    if (stateError) throw stateError;
+
+    const state = firstRow<GoogleCalendarState>(stateRows);
+    if (!state?.refresh_token) {
+      return { status: "not_connected", events: [] };
+    }
+
+    const accessToken = await ensureCalendarAccessToken(admin, state);
+    if (!accessToken) {
+      return { status: "unavailable", events: [] };
+    }
+
+    const calendarId = encodeURIComponent(state.calendar_id || "primary");
+    const params = new URLSearchParams({
+      timeMin: new Date().toISOString(),
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "10",
+      timeZone: state.timezone || "Asia/Kolkata"
+    });
+    const eventsResponse = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?${params}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(8000)
+      }
+    );
+    if (!eventsResponse.ok) {
+      console.warn(`calendar_events_failed status=${eventsResponse.status}`);
+      return { status: "unavailable", events: [] };
+    }
+
+    const eventsJson = await eventsResponse.json();
+    const rawItems = Array.isArray(eventsJson?.items) ? eventsJson.items : [];
+    const events = rawItems
+      .map((item: unknown) => mapCalendarEvent(item))
+      .filter((item: CalendarEvent | null): item is CalendarEvent => item !== null);
+    return { status: "ok", events };
+  } catch (error) {
+    console.warn("calendar_payload_unavailable", error instanceof Error ? error.message : String(error));
+    return { status: "unavailable", events: [] };
+  }
+}
+
+async function ensureCalendarAccessToken(admin: any, state: GoogleCalendarState): Promise<string | null> {
+  const expiryMs = state.token_expiry ? Date.parse(state.token_expiry) : 0;
+  const hasFreshToken = state.access_token && Number.isFinite(expiryMs) && expiryMs > Date.now() + 60_000;
+  if (hasFreshToken) {
+    return state.access_token as string;
+  }
+
+  const clientId = Deno.env.get("GOOGLE_CLIENT_ID");
+  const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET");
+  if (!clientId || !clientSecret) {
+    console.warn("calendar_token_refresh_skipped missing GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET");
+    return null;
+  }
+
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(8000),
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: state.refresh_token as string,
+      grant_type: "refresh_token"
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    console.warn(`calendar_token_refresh_failed status=${response.status} body=${detail.slice(0, 200)}`);
+    return null;
+  }
+
+  const tokens = await response.json();
+  const accessToken = typeof tokens?.access_token === "string" ? tokens.access_token : "";
+  if (!accessToken) return null;
+
+  const expiresIn = Number(tokens?.expires_in);
+  const lifetimeSeconds = Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600;
+  await admin.database
+    .from("google_calendar_state")
+    .update({
+      access_token: accessToken,
+      token_expiry: new Date(Date.now() + lifetimeSeconds * 1000).toISOString(),
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", 1);
+  return accessToken;
+}
+
+function mapCalendarEvent(item: unknown): CalendarEvent | null {
+  if (!item || typeof item !== "object") return null;
+  const event = item as Record<string, any>;
+  const start = event.start ?? {};
+  const end = event.end ?? {};
+  const startIso = String(start.dateTime || start.date || "");
+  if (!startIso) return null;
+  const title = typeof event.summary === "string" && event.summary.trim()
+    ? event.summary.trim().slice(0, 120)
+    : "(untitled)";
+  return {
+    title,
+    start_iso: startIso,
+    end_iso: String(end.dateTime || end.date || ""),
+    all_day: Boolean(start.date) && !start.dateTime,
+    location: typeof event.location === "string" ? event.location.slice(0, 200) : null
+  };
 }
 
 function corsHeaders(): HeadersInit {

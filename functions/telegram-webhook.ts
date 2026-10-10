@@ -22,7 +22,17 @@ type ChallengeAction = {
   value: number;
 };
 
-type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction;
+export type CalendarEventAction = {
+  kind: "calendar";
+  action: "create_event";
+  title: string;
+  start_iso: string;
+  duration_min: number;
+  all_day: boolean;
+  location?: string;
+};
+
+type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction;
 
 type TelegramUpdate = {
   message?: {
@@ -96,6 +106,7 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
   "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
   "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
+  "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"start_iso\":\"YYYY-MM-DDTHH:MM:00+05:30\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\"}. Use start_iso \"YYYY-MM-DD\" with all_day true for all-day events. Assume timezone Asia/Kolkata (UTC+05:30) and resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
@@ -118,7 +129,7 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
     body: JSON.stringify({
       model: Deno.env.get("ZAI_MODEL") || "glm-4.7",
       messages: [
-        { role: "system", content: PLANNER_SYSTEM_PROMPT },
+        { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Current date/time: ${istNowString()}` },
         { role: "user", content: message }
       ],
       response_format: { type: "json_object" },
@@ -153,7 +164,147 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
 async function applyTelegramAction(admin: any, action: TelegramAction): Promise<string> {
   if (isChallengeAction(action)) return applyChallengeAction(admin, action);
   if (isTargetAction(action)) return applyHealthTargetAction(admin, action);
+  if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
   return applyPlannerAction(admin, action);
+}
+
+function isEventAction(action: TelegramAction): action is CalendarEventAction {
+  return (action as CalendarEventAction).kind === "calendar";
+}
+
+async function applyCalendarCreateAction(admin: any, action: CalendarEventAction): Promise<string> {
+  const state = await loadCalendarState(admin);
+  if (!state?.refresh_token) {
+    return "Calendar not connected — open the OAuth link first (curl the google-calendar-oauth function).";
+  }
+
+  const accessToken = await ensureGoogleAccessToken(admin, state);
+  if (!accessToken) {
+    return "Calendar unavailable — could not refresh the Google token. Try again later.";
+  }
+
+  const allDay = action.all_day;
+  const startIso = action.start_iso;
+  const endIso = allDay ? allDayEndDate(startIso) : new Date(Date.parse(startIso) + action.duration_min * 60_000).toISOString();
+  if (!allDay && !Number.isFinite(Date.parse(endIso))) {
+    return "I could not understand that update.";
+  }
+
+  const body: Record<string, unknown> = {
+    summary: action.title,
+    ...(allDay
+      ? { start: { date: startIso.slice(0, 10) }, end: { date: endIso } }
+      : { start: { dateTime: startIso }, end: { dateTime: endIso } }),
+    ...(action.location ? { location: action.location } : {})
+  };
+
+  const calendarId = encodeURIComponent(state.calendar_id || "primary");
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify(body)
+    }
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    console.error(`calendar_event_insert_failed status=${response.status} body=${detail.slice(0, 200)}`);
+    return "Calendar unavailable — Google rejected the event. Try again later.";
+  }
+
+  return `Scheduled: ${action.title} — ${formatEventStart(startIso, allDay)}`;
+}
+
+async function loadCalendarState(admin: any): Promise<GoogleCalendarStateRow | null> {
+  const { data: rows, error } = await admin.database
+    .from("google_calendar_state")
+    .select("refresh_token,access_token,token_expiry,calendar_id")
+    .eq("id", 1)
+    .limit(1);
+  if (error) throw error;
+  return Array.isArray(rows) && rows.length > 0 ? rows[0] as GoogleCalendarStateRow : null;
+}
+
+type GoogleCalendarStateRow = {
+  refresh_token: string | null;
+  access_token: string | null;
+  token_expiry: string | null;
+  calendar_id: string | null;
+};
+
+async function ensureGoogleAccessToken(admin: any, state: GoogleCalendarStateRow): Promise<string | null> {
+  const expiryMs = state.token_expiry ? Date.parse(state.token_expiry) : 0;
+  if (state.access_token && Number.isFinite(expiryMs) && expiryMs > Date.now() + 60_000) {
+    return state.access_token;
+  }
+
+  const clientId = Deno.env.get("GOOGLE_CLIENT_ID");
+  const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET");
+  if (!clientId || !clientSecret || !state.refresh_token) return null;
+
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(8000),
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: state.refresh_token,
+      grant_type: "refresh_token"
+    })
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    console.warn(`calendar_token_refresh_failed status=${response.status} body=${detail.slice(0, 200)}`);
+    return null;
+  }
+
+  const tokens = await response.json();
+  const accessToken = typeof tokens?.access_token === "string" ? tokens.access_token : "";
+  if (!accessToken) return null;
+
+  const expiresIn = Number(tokens?.expires_in);
+  const lifetimeSeconds = Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600;
+  await admin.database
+    .from("google_calendar_state")
+    .update({
+      access_token: accessToken,
+      token_expiry: new Date(Date.now() + lifetimeSeconds * 1000).toISOString(),
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", 1);
+  return accessToken;
+}
+
+function allDayEndDate(startDateIso: string): string {
+  const dateOnly = startDateIso.slice(0, 10);
+  const nextDay = new Date(Date.parse(`${dateOnly}T00:00:00Z`) + 24 * 60 * 60 * 1000);
+  return nextDay.toISOString().slice(0, 10);
+}
+
+function formatEventStart(startIso: string, allDay: boolean): string {
+  const timezone = "Asia/Kolkata";
+  const parsed = Date.parse(startIso);
+  if (!Number.isFinite(parsed)) return startIso;
+  if (allDay) {
+    const fmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric" });
+    return `${fmt.format(parsed)} (all day)`;
+  }
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true
+  });
+  return `${fmt.format(parsed)} IST`;
+}
+
+function istNowString(): string {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata", weekday: "short", year: "numeric", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true
+  });
+  return `${fmt.format(now)} (Asia/Kolkata)`;
 }
 
 async function applyChallengeAction(admin: any, action: ChallengeAction): Promise<string> {
@@ -310,6 +461,11 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
   const normalized = message.trim().replace(/\s+/g, " ");
   const lower = normalized.toLowerCase();
 
+  if (/^\/event\b/i.test(normalized)) {
+    const eventAction = parseEventHeuristically(normalized);
+    if (eventAction) return eventAction;
+  }
+
   const challengeAction = parseChallengeHeuristically(normalized);
   if (challengeAction) return challengeAction;
 
@@ -373,9 +529,14 @@ export function parseMessageHeuristically(message: string): TelegramAction {
   if (targetAction) return targetAction;
 
   const normalized = message.trim().replace(/\s+/g, " ");
+  const explicitList = hasExplicitList(normalized);
+  if (!explicitList) {
+    const eventAction = parseEventHeuristically(normalized);
+    if (eventAction) return eventAction;
+  }
+
   const lower = normalized.toLowerCase();
   const listKey = detectListKey(normalized);
-  const explicitList = hasExplicitList(normalized);
 
   let action: PlannerAction["action"] = "add";
   if (/\b(undo|uncheck|not done|incomplete)\b/.test(lower)) {
@@ -421,7 +582,138 @@ export function parseMessageHeuristically(message: string): TelegramAction {
 }
 
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validatePlannerAction(input);
+  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+}
+
+export function validateEventAction(input: unknown): CalendarEventAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<CalendarEventAction> & { date?: unknown; time?: unknown };
+  if (candidate.kind !== "calendar" && candidate.action !== "create_event") return null;
+  if (candidate.action && candidate.action !== "create_event") return null;
+
+  const title = typeof candidate.title === "string" ? candidate.title.trim().slice(0, 120) : "";
+  if (!title) return null;
+
+  let startIso: string;
+  let allDay = Boolean(candidate.all_day);
+
+  if (typeof candidate.start_iso === "string" && candidate.start_iso.trim()) {
+    const raw = candidate.start_iso.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+      startIso = raw;
+      allDay = true;
+    } else if (Number.isFinite(Date.parse(raw)) && raw.includes("T")) {
+      startIso = raw;
+    } else {
+      return null;
+    }
+  } else if (typeof candidate.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(candidate.date) &&
+             typeof candidate.time === "string" && /^\d{1,2}:\d{2}$/.test(candidate.time)) {
+    const [hours, minutes] = candidate.time.split(":");
+    startIso = `${candidate.date}T${hours.padStart(2, "0")}:${minutes}:00+05:30`;
+  } else {
+    return null;
+  }
+
+  if (!Number.isFinite(Date.parse(startIso))) return null;
+
+  let durationMin = 60;
+  if (candidate.duration_min !== undefined && candidate.duration_min !== null) {
+    const parsed = Number(candidate.duration_min);
+    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 24 * 60) return null;
+    durationMin = Math.round(parsed);
+  }
+
+  const location = typeof candidate.location === "string" && candidate.location.trim()
+    ? candidate.location.trim().slice(0, 200)
+    : undefined;
+
+  return {
+    kind: "calendar",
+    action: "create_event",
+    title,
+    start_iso: startIso,
+    duration_min: durationMin,
+    all_day: allDay,
+    ...(location ? { location } : {})
+  };
+}
+
+const IST_OFFSET = "+05:30";
+const WEEKDAY_INDEX: Record<string, number> = {
+  sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, thu: 4, thur: 4, thurs: 4, fri: 5, sat: 6
+};
+
+export function parseEventHeuristically(message: string, now: Date = new Date()): CalendarEventAction | null {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  const isSlashCommand = /^\/event\b/i.test(normalized);
+  const triggered = isSlashCommand || /\b(schedule|book|appointment)\b/.test(lower);
+  if (!triggered) return null;
+
+  const weekdayMatch = lower.match(/\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day|nesday|rsday|urday)?\b/);
+  const relativeMatch = lower.match(/\b(tomorrow|tonight|today)\b/);
+  const timeMatch = lower.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/) ?? lower.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (!weekdayMatch && !relativeMatch && !timeMatch) return null;
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(now);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  let dayOffset = 0;
+  if (weekdayMatch) {
+    const todayIst = new Date(Date.UTC(Number(byType.year), Number(byType.month) - 1, Number(byType.day)));
+    const targetIndex = WEEKDAY_INDEX[weekdayMatch[1]];
+    dayOffset = (targetIndex - todayIst.getUTCDay() + 7) % 7;
+  } else if (relativeMatch?.[1] === "tomorrow") {
+    dayOffset = 1;
+  }
+
+  let hours: number;
+  let minutes = 0;
+  if (timeMatch) {
+    hours = Number(timeMatch[1]);
+    minutes = Number(timeMatch[2] ?? 0);
+    if (/pm/i.test(timeMatch[3] ?? "") && hours < 12) hours += 12;
+    if (/am/i.test(timeMatch[3] ?? "") && hours === 12) hours = 0;
+  } else if (relativeMatch?.[1] === "tonight") {
+    hours = 20;
+  } else {
+    hours = 9;
+  }
+  if (hours > 23 || minutes > 59) return null;
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const baseDay = new Date(Date.UTC(Number(byType.year), Number(byType.month) - 1, Number(byType.day) + dayOffset));
+  const dateStr = `${baseDay.getUTCFullYear()}-${pad(baseDay.getUTCMonth() + 1)}-${pad(baseDay.getUTCDate())}`;
+  let startMs = Date.parse(`${dateStr}T${pad(hours)}:${pad(minutes)}:00${IST_OFFSET}`);
+  if (!Number.isFinite(startMs)) return null;
+  if (startMs <= now.getTime()) {
+    startMs += 7 * 24 * 60 * 60 * 1000;
+  }
+
+  const startIso = new Date(startMs).toISOString();
+  const title = normalized
+    .replace(/^\/event\b/i, " ")
+    .replace(/\b(schedule|book|appointment)\b/i, " ")
+    .replace(new RegExp(`\\b${weekdayMatch?.[0] ?? "\\u0000"}\\b`, "i"), " ")
+    .replace(/\b(tomorrow|tonight|today)\b/i, " ")
+    .replace(timeMatch ? new RegExp(timeMatch[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i") : /\u0000/, " ")
+    .replace(/\b(at|on|next|this|for)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[-,;:]+|[-,;:]+$/g, "")
+    .trim();
+  if (!title) return null;
+
+  return {
+    kind: "calendar",
+    action: "create_event",
+    title,
+    start_iso: startIso,
+    duration_min: 60,
+    all_day: false
+  };
 }
 
 function validatePlannerAction(input: unknown): PlannerAction | null {
