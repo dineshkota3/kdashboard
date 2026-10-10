@@ -1,6 +1,6 @@
 # Phase 3 — Google Calendar (Dashboard Panel + Telegram Booking)
 
-> Status: ◐ In progress (all code shipped + deployed 2026-10-10; panel renders `NOT CONNECTED`; OAuth connect pending Google Cloud setup)
+> Status: ✅ Complete (2026-10-11 IST — OAuth connected; bot-created events verified on Google Calendar AND on the Kindle; both kill switches pass)
 > Gate: Phase 4 starts only after a bot-created event appears in Google Calendar AND on the Kindle.
 
 ## Goal
@@ -124,3 +124,8 @@ calendar: {
   - Tests: 41 unit (+11 calendar: heuristic parse incl. IST rollovers, validator ISO/{date,time}/date-only/rejections, fast-path routing) + integration, all green. Backend verified live: `GET kindle-dashboard-data` → `calendar:{status:"not_connected",events:[]}`, version hash includes calendar.
   - Ops note: Kindle DHCP lease changed mid-session (`.110`→`.111`); SSH config updated. Cable-plug incident also polluted the running 24h battery test — re-verify tomorrow's reading with that in mind.
   - **PENDING:** Google Cloud setup (Calendar API + OAuth client + `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` secrets) → OAuth consent → verification checklist. Reminder: publish the consent app to Production after initial testing or the refresh token dies weekly.
+- **2026-10-11 IST — OAuth connected; verification checklist PASSED; Phase 3 gate closed:**
+  - **Gotcha 1 (test-user gate):** consent blocked with "app is being tested" until the browsing Google account was added under OAuth consent screen → Test users.
+  - **Gotcha 2 (redirect_uri_mismatch at exchange):** the InsForge gateway presents an internal host in `req.url` (`*.insforge.deno.net`), so deriving the redirect URI from the request poisoned the token exchange (auth used the public URI, exchange sent the internal one). **Fix: build the redirect URI from the `INSFORGE_BASE_URL` secret, never from `req.url`.** Error surface improved to include Google's reason + computed `redirect_uri` for fast diagnosis. Authoritative redirect URI: `https://<project>.insforge.app/functions/google-calendar-oauth`.
+  - Verification: read path `status:ok` with real events (IST offsets); NLP booking `schedule kindle test friday 3pm` → real event Fri Oct 16 3:00 PM IST (glm-4.7 ~6s incl. insert — Z.ai path confirmed by latency); heuristic `/event tomorrow 9am standup` → Mon Oct 12 9:00 AM IST (~1.2s); both appeared in the payload and on the Kindle via SSE (`events=planner refresh=1`, CALENDAR strip showed 4 events incl. both test bookings); kill switch B (token_expiry in past) → auto-refresh, still `ok`; kill switch A (refresh_token NULL) → `not_connected`, restored from a backup table → `ok` again.
+  - Test events `Kindle test` + `standup` remain on the user's Google Calendar for manual deletion.

@@ -19,8 +19,11 @@ export default async function(req: Request): Promise<Response> {
   try {
     const clientId = requiredEnv("GOOGLE_CLIENT_ID");
     const clientSecret = requiredEnv("GOOGLE_CLIENT_SECRET");
+    // The gateway may present an internal host in req.url (e.g. *.insforge.deno.net),
+    // so the redirect URI is built from the stable public base URL instead.
+    const publicBase = requiredEnv("INSFORGE_BASE_URL").replace(/\/$/, "");
+    const redirectUri = `${publicBase}/functions/google-calendar-oauth`;
     const url = new URL(req.url);
-    const redirectUri = `${url.origin}/functions/google-calendar-oauth`;
     const code = url.searchParams.get("code");
 
     if (!code) {
@@ -50,7 +53,13 @@ export default async function(req: Request): Promise<Response> {
     if (!tokenResponse.ok) {
       const detail = await tokenResponse.text().catch(() => "");
       console.error(`google_oauth_exchange_failed status=${tokenResponse.status} body=${detail.slice(0, 300)}`);
-      return jsonResponse({ ok: false, error: "Token exchange failed" }, 502);
+      let reason = "";
+      try {
+        reason = String(JSON.parse(detail)?.error ?? "");
+      } catch {
+        reason = "";
+      }
+      return jsonResponse({ ok: false, error: `Token exchange failed (${tokenResponse.status}${reason ? `: ${reason}` : ""})`, redirect_uri: redirectUri }, 502);
     }
 
     const tokens = await tokenResponse.json();
