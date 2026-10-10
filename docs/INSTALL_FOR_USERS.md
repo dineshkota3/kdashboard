@@ -65,6 +65,28 @@ npx @insforge/cli secrets add ZAI_MODEL glm-4.7
 If `ZAI_API_KEY` is missing, the Telegram webhook uses its built-in command
 parser.
 
+### Google Calendar (one command)
+
+Requires the `gcloud` CLI (`brew install --cask google-cloud-sdk`). The script
+creates the Google Cloud project, enables the Calendar API, walks you through
+the two browser forms, stores the OAuth secrets, redeploys the functions, and
+opens the consent link:
+
+```sh
+npm run google:setup
+```
+
+Prefer manual setup? Create an OAuth **Web application** client in Google
+Console with redirect URI `https://your-project.insforge.app/functions/google-calendar-oauth`,
+then:
+
+```sh
+npx @insforge/cli secrets add GOOGLE_CLIENT_ID your-client-id
+npx @insforge/cli secrets add GOOGLE_CLIENT_SECRET your-client-secret
+npx @insforge/cli functions deploy google-calendar-oauth --file functions/google-calendar-oauth.ts --name "Google Calendar OAuth"
+curl https://your-project.insforge.app/functions/google-calendar-oauth   # open the auth_url
+```
+
 ### Housekeeping
 
 Completed list items stay on the board (bottom of each list) for 3 days, then
