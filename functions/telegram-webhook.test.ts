@@ -5,6 +5,8 @@ import {
   parseFastHeuristicMessage,
   parseMessageHeuristically,
   validateTelegramAction,
+  validateEventAction,
+  parseEventHeuristically,
   PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
@@ -209,6 +211,91 @@ test("validateTelegramAction accepts challenge action", () => {
 
 test("validateTelegramAction rejects kind none (LLM no-action guard)", () => {
   assert.equal(validateTelegramAction({ kind: "none" }), null);
+});
+
+// ---- calendar events (phase 3) ----
+// 2026-10-12T04:30Z = Monday 10:00 IST
+
+test("parseEventHeuristically: friday 3pm -> next Friday 15:00 IST", () => {
+  const a = parseEventHeuristically("schedule dentist Friday 3pm", new Date("2026-10-12T04:30:00Z"));
+  assert.ok(a);
+  assert.equal(a.kind, "calendar");
+  assert.equal(a.title, "dentist");
+  assert.equal(a.start_iso, "2026-10-16T09:30:00.000Z");
+  assert.equal(a.duration_min, 60);
+  assert.equal(a.all_day, false);
+});
+
+test("parseEventHeuristically: /event tomorrow 9am standup", () => {
+  const a = parseEventHeuristically("/event tomorrow 9am standup", new Date("2026-10-12T04:30:00Z"));
+  assert.ok(a);
+  assert.equal(a.title, "standup");
+  assert.equal(a.start_iso, "2026-10-13T03:30:00.000Z");
+});
+
+test("parseEventHeuristically: tonight 8pm", () => {
+  const a = parseEventHeuristically("schedule gym tonight 8pm", new Date("2026-10-12T04:30:00Z"));
+  assert.ok(a);
+  assert.equal(a.title, "gym");
+  assert.equal(a.start_iso, "2026-10-12T14:30:00.000Z");
+});
+
+test("parseEventHeuristically: past weekday rolls to next week", () => {
+  const a = parseEventHeuristically("schedule brunch sunday 10am", new Date("2026-10-12T04:30:00Z"));
+  assert.ok(a);
+  assert.equal(a.start_iso, "2026-10-18T04:30:00.000Z");
+});
+
+test("parseEventHeuristically: same-day past time rolls to next week", () => {
+  const a = parseEventHeuristically("schedule standup today 9am", new Date("2026-10-12T04:30:00Z"));
+  assert.ok(a);
+  assert.equal(a.start_iso, "2026-10-19T03:30:00.000Z");
+});
+
+test("parseEventHeuristically: garbage and planner phrasing -> null", () => {
+  assert.equal(parseEventHeuristically("schedule something sometime", new Date("2026-10-12T04:30:00Z")), null);
+  assert.equal(parseEventHeuristically("add milk to groceries", new Date("2026-10-12T04:30:00Z")), null);
+  assert.equal(parseEventHeuristically("book", new Date("2026-10-12T04:30:00Z")), null);
+});
+
+test("validateEventAction accepts iso start", () => {
+  const a = validateEventAction({
+    kind: "calendar", action: "create_event", title: "Dentist",
+    start_iso: "2026-10-16T09:30:00Z", duration_min: 45
+  });
+  assert.ok(a);
+  assert.equal(a.duration_min, 45);
+  assert.equal(a.all_day, false);
+});
+
+test("validateEventAction normalizes {date,time} to IST iso", () => {
+  const a = validateEventAction({
+    kind: "calendar", action: "create_event", title: "Standup", date: "2026-10-16", time: "9:30"
+  });
+  assert.ok(a);
+  assert.equal(a.start_iso, "2026-10-16T09:30:00+05:30");
+  assert.equal(a.duration_min, 60);
+});
+
+test("validateEventAction date-only start implies all_day", () => {
+  const a = validateEventAction({
+    kind: "calendar", action: "create_event", title: "Trip", start_iso: "2026-10-20"
+  });
+  assert.ok(a);
+  assert.equal(a.all_day, true);
+});
+
+test("validateEventAction rejects empty title, bad duration, malformed start", () => {
+  assert.equal(validateEventAction({ kind: "calendar", action: "create_event", title: "  ", start_iso: "2026-10-16T09:30:00Z" }), null);
+  assert.equal(validateEventAction({ kind: "calendar", action: "create_event", title: "X", start_iso: "2026-10-16T09:30:00Z", duration_min: 0 }), null);
+  assert.equal(validateEventAction({ kind: "calendar", action: "create_event", title: "X", start_iso: "not-a-date" }), null);
+  assert.equal(validateEventAction({ kind: "calendar", action: "create_event", title: "X" }), null);
+});
+
+test("heuristic /event goes through fast path", () => {
+  const a = parseFastHeuristicMessage("/event tomorrow 9am standup");
+  assert.ok(a);
+  assert.equal(a.kind, "calendar");
 });
 
 // ---- Z.ai LLM prompt contract (phase 2) ----

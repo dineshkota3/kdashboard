@@ -67,6 +67,9 @@ Default `make -C kindle/native extension-zig` (soft-float static musl). If `Ille
 2. `ZIG_TARGET=arm-linux-gnueabihf ZIG_MCPU=generic+v7a`
 3. Real cross-GCC via `KINDLE_CXX=...`
 
+### Kindle SSH unreachable — Phase 1+
+Two known causes: (1) plugging the USB cable flips USBNetLite back to drive mode and kills dropbear — unplug to restore; (2) the DHCP lease changes — re-scan the LAN (ping sweep + SSH key probe) and update `~/.ssh/config`. Deploy sequence over SSH: scp binary → chmod (own call) → `start-light.sh` (own call); never put the binary path in the same command as start/stop (`dashboard.sh` runs `pkill -f` on it).
+
 ### Firmware update survival (5.18.x+)
 After an Amazon firmware update: re-jailbreak per kindlemodding wiki if needed, then reinstall MRPI + KUAL Next; extension files under `/mnt/us/extensions/` usually survive but re-run `bin/diagnose.sh`.
 
