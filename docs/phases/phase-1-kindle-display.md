@@ -1,6 +1,6 @@
 # Phase 1 — Kindle Display on PW5 (KUAL Next + Zig Cross-Compile)
 
-> Status: ☐ Not started
+> Status: ◐ In progress (render + SSE verified on device 2026-10-10; 24h battery test running, results due 2026-10-11)
 > Gate: Phase 2 starts only after the dashboard renders on the Kindle and survives a 24 h battery check.
 
 ## Goal
@@ -104,4 +104,29 @@ Re-copy the tar.gz after each rebuild. `bin/proof.sh` and `bin/diagnose.sh` in t
 
 ## 6. Results log
 
-_Record battery readings, which ABI ladder step worked, and any deviations._
+- **2026-10-10 — Mac-side build complete** (zig 0.17.0 via Homebrew):
+  - `npm run native:check` passes (binary builds + runs; `bitmap unavailable` expected on macOS — PW5-res render assertions live in `npm test`).
+  - `make -C kindle/native extension-zig` built clean with default ABI ladder step 1 (`arm-linux-musleabi`, static musl, stripped).
+  - Binary verified: `ELF 32-bit LSB executable, ARM, EABI5, statically linked, stripped`. Package: `kindle/native/build/kindle-dashboard-kual.tar.gz` (392K, includes config.sh.example, menu.json, PGM assets, all bin/ scripts).
+  - Next: device prep (MRPI + KUAL Next), install via USB/SSH, create `config.sh`.
+- **2026-10-10 — Extension installed + config written via USB:**
+  - Package extracted to `/Volumes/Kindle/extensions/kindle-dashboard/`; `config.sh` created from example with live URLs (data/toggle on `eq8jq3jz.us-east.insforge.app`, events on `eq8jq3jz.function2.insforge.app`), tokens from InsForge secrets (read token verified → HTTP 200 from Mac), `INTERVAL=3600`, keep-awake on, sleep window `23:30-06:30`, tz `Asia/Kolkata`.
+- **2026-10-10 — USBNetwork (USBNetLite) set up; remote access over Wi-Fi SSH:**
+  - Installed `notmarek/kindle-usbnetlite` 1.0.M (`Update_usbnetlite_1.0.P_install_khf_11thgenplus.bin`) via `mrpackages` + `;log mrpi`.
+  - Pre-staged dedicated SSH key (`~/.ssh/kindle_ed25519`) into `usbnetlite/etc/dropbear/authorized_keys` and set `ALLOW_PASSWORD_LOGIN="false"` **before** first enable — default `root/kindle` password auth never active on the network.
+  - Kindle found on LAN at `<kindle-lan-ip>` (ping sweep + key-auth probe); pinned in `~/.ssh/config` as `Host kindle`. dropbear on :22, USE_WIFI=true.
+  - TODO: tap KUAL → USBNetLite → **Enable SSH at boot** so SSH survives reboots.
+- **2026-10-10 — ABI ladder step 1 runs on device; render + SSE verified:**
+  - Zig-built static musl binary (soft-float `arm-linux-musleabi`) runs fine on PW5 fw 5.18.6 — no `Illegal instruction`, no ladder escalation needed.
+  - Device: kernel 4.9.77-lab126, framebuffer `hwtcon_v2` 1236×1648 8bpp, touch on `/dev/input/event1`.
+  - **Bug found + fixed:** `bin/diagnose.sh` did not pass `--read-token` to the native one-shot → its fetch always 401'd against the token-gated endpoint (unlike `dashboard.sh`, which passes it). Fixed in repo + deployed to device; re-run: `timing=fetch ok=1`, exit 0, cache 1034 bytes.
+  - Visual render verified via saved PGM (converted to PNG): DAILY OPS header, LIVE status, STEPS/CALORIES gauges (targets 12,000 / 2,000 from backend), CHORES + 75-Day Challenge left, WORKOUT + GROCERY right — matches Phase-0 grid.
+  - **SSE push verified E2E:** Telegram `add sse test to todo` → bot reply → log shows `events=planner refresh=1` → `refresh_now` → `timing=fetch ok=1` → framebuffer re-render → item visible in saved frame.
+  - KUAL wrappers (start light/dark, once, stop) exercised by user earlier — all exit 0; touch tap → exit-to-home works.
+- **2026-10-10 — Home grid reduced to Chores + Grocery (user preference):**
+  - Removed the 75-Day Challenge tile and the Workout card from `drawBitmapDashboard`; home now = CHORES full-height left, GROCERY full-height right. Challenge screen/workout view code and backend payload untouched (reachable views reduced to chores/grocery from home; `drawChallengeTile` helper deleted to keep the warning-free build).
+  - Rebuilt (zig, zero warnings), `npm test` green, deployed over SSH (md5 verified). Render confirmed visually.
+  - **Gotcha:** `dashboard.sh` runs `pkill -f` on the binary path — never include the literal binary path in the same SSH command string as start/stop (kills your own session). Deploy = separate ssh calls: scp binary → chmod (own call) → `start-light.sh` (own call).
+- **2026-10-10 — 24h battery test started:** baseline **99% at 11:44 EEDT**, dashboard running (start light), keep-awake on, hourly interval. Check ~2026-10-11 11:45 EEDT; expect single-digit %/day.
+  - Note: periodic repaint ticks render from cache and save frames labelled `cached/offline` — cosmetic; event/manual renders show `live`.
+

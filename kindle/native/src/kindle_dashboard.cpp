@@ -1074,19 +1074,6 @@ void drawListCard(Canvas* canvas, int x, int y, int w, int h, const List* list, 
   }
 }
 
-void drawChallengeTile(Canvas* canvas, int x, int y, int size) {
-  strokeRect(canvas, x, y, size, size, 3, 0);
-  Rect tile_rect = {x, y, size, size};
-  addTouchRegion(tile_rect, kTouchOpenChallenge, -1, -1, "", 0);
-  const int art_x = x + 3;
-  const int art_y = y + 3;
-  const int art_w = size - 6;
-  const int art_h = size - 6;
-  if (art_h > 24) {
-    drawPgmImageCover(canvas, art_x, art_y, art_w, art_h, kChallengeCoverPath, kChallengeCoverLocalPath, framebufferInvertForVisibleImage(0));
-  }
-}
-
 void drawChevron(Canvas* canvas, const Rect& rect, int direction) {
   const int cx = rect.x + rect.w / 2;
   const int cy = rect.y + rect.h / 2;
@@ -1352,21 +1339,11 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   const int lists_h = shell_y + shell_h - lists_y - footer_h - gap - 10;
   const int list_w = (shell_w - 20 - gap) / 2;
   if (dashboard->list_count > 0) {
-    int challenge_side = list_w;
-    if (lists_h < challenge_side + 128) challenge_side = lists_h - 128;
-    if (challenge_side < 160) challenge_side = 160;
-    const int challenge_gap = gap;
-    const int chores_h = lists_h - challenge_side - challenge_gap;
-    drawListCard(canvas, shell_x + 10, lists_y, list_w, chores_h, &dashboard->lists[0], 0);
-    drawChallengeTile(canvas, shell_x + 10, lists_y + chores_h + challenge_gap, challenge_side);
+    drawListCard(canvas, shell_x + 10, lists_y, list_w, lists_h, &dashboard->lists[0], 0);
   }
   if (dashboard->list_count > 2) {
     const int right_x = shell_x + 10 + list_w + gap;
-    const int right_h = lists_h;
-    const int workout_h = (right_h - gap) / 2;
-    const int grocery_h = right_h - workout_h - gap;
-    drawListCard(canvas, right_x, lists_y, list_w, workout_h, &dashboard->lists[1], 1);
-    drawListCard(canvas, right_x, lists_y + workout_h + gap, list_w, grocery_h, &dashboard->lists[2], 2);
+    drawListCard(canvas, right_x, lists_y, list_w, lists_h, &dashboard->lists[2], 2);
   }
 
   doubleRect(canvas, shell_x + 10, shell_y + shell_h - footer_h - 10, shell_w - 20, footer_h, 0);
