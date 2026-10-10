@@ -55,14 +55,14 @@ npx @insforge/cli secrets add INSFORGE_BASE_URL https://your-project.insforge.ap
 npx @insforge/cli secrets add INSFORGE_API_KEY your-server-only-api-key
 ```
 
-Optional natural-language parsing:
+Optional natural-language parsing (Z.ai):
 
 ```sh
-npx @insforge/cli secrets add OPENAI_API_KEY your-openai-key
-npx @insforge/cli secrets add OPENAI_MODEL gpt-4o-mini
+npx @insforge/cli secrets add ZAI_API_KEY your-zai-api-key
+npx @insforge/cli secrets add ZAI_MODEL glm-4.7
 ```
 
-If `OPENAI_API_KEY` is missing, the Telegram webhook uses its built-in command
+If `ZAI_API_KEY` is missing, the Telegram webhook uses its built-in command
 parser.
 
 ## 3. Connect Telegram
@@ -92,7 +92,7 @@ mark milk done
 
 ## Supported Telegram Messages
 
-The webhook supports these message types. If `OPENAI_API_KEY` is configured, it
+The webhook supports these message types. If `ZAI_API_KEY` is configured, it
 can understand more natural phrasing; if not, the built-in parser supports the
 patterns below.
 

@@ -64,8 +64,8 @@ Required:
 - INSFORGE_API_KEY
 
 Optional:
-- OPENAI_API_KEY
-- OPENAI_MODEL
+- ZAI_API_KEY
+- ZAI_MODEL
 ```
 
 The assistant may run commands like:

@@ -1,6 +1,6 @@
-# Phase 2 — Z.ai glm-4.6 NLP Swap
+# Phase 2 — Z.ai glm-4.7 NLP Swap
 
-> Status: ☐ Not started
+> Status: ✅ Complete (2026-10-10 — glm-4.7 via Z.ai Coding Plan endpoint; natural-phrasing checklist green, fallback proven live)
 > Gate: Phase 3 starts only after natural-phrasing commands parse correctly and the heuristic fallback is proven.
 
 ## Goal
@@ -94,4 +94,22 @@ Latency/quality:
 
 ## 5. Results log
 
-_Record latency observations, prompt-tuning notes, and any commands that needed prompt fixes._
+- **2026-10-10 — Code shipped and deployed:**
+  - `parseTelegramMessage`: OpenAI branch → Z.ai (`https://api.z.ai/api/paas/v4/chat/completions`, `ZAI_API_KEY`, `ZAI_MODEL=glm-4.6`, 20s `AbortSignal.timeout`). Prompt extracted to exported `PLANNER_SYSTEM_PROMPT` (strict-JSON-only instruction added; kinds unchanged: planner/target/challenge).
+  - `.env.example` + README + INSTALL_FOR_USERS + SETUP_WITH_ASSISTANT swapped to Z.ai. No legacy `OPENAI_*` secrets existed in InsForge (verified).
+  - Failure-path logging: `zai_parse_failed status=<code> body=<first 300 chars>` (warn) before heuristic fallback.
+  - Tests: +2 (prompt contains `grocery|workout|todo`, no meal/recipe; source references api.z.ai + ZAI_* env names, zero OpenAI strings). `npm test` 29 unit + 10 integration green. Webhook redeployed.
+- **2026-10-10 — Fallback path proven live (unintentionally, by the account itself):**
+  - Z.ai returns **429 error 1113 "Insufficient balance or no resource package. Please recharge."** on every call → heuristic fallback absorbed all of them; every webhook still returned 200 with correct actions. Zero user-visible breakage.
+  - Measured: fast-heuristic parse ≈ 1 ms; Z.ai-attempt-then-fallback ≈ 0.4–0.8 s (429 round trip); full webhook 200 in 0.4–1.3 s.
+  - Routing note: messages with a planner verb + explicit list alias (e.g. "add … to my shopping list") are deterministically parsed and never hit Z.ai; natural phrasing without list keywords ("i need to buy X and Y tomorrow") is what reaches the LLM. The heuristic catch-all splits unknown text on " and " into a todo add — acceptable fallback behavior, but worth remembering when judging LLM vs fallback results.
+  - **BLOCKED:** LLM-path verification (natural-phrasing checklist, glm-4.6 latency) needs Z.ai account credits. Options: top up glm-4.6, or switch `ZAI_MODEL` to `glm-4.5-air` (possibly covered by trial resources; also faster per phase doc). Rerun the verification checklist + fallback `secrets update` test once the account can serve requests.
+  - Test artifacts cleaned from `planner_items` after live tests.
+- **2026-10-10 (later) — glm-4.7 + Coding Plan endpoint: Phase 2 COMPLETE:**
+  - Standard `api/paas/v4` kept 429-ing (error 1113) even after switching `ZAI_MODEL=glm-4.7` → the account is a **GLM Coding Plan**, not a pay-as-you-go balance. `api/coding-paas/v4` (hyphen) returned wrapped 404. **Correct OpenAI-compatible Coding Plan base: `https://api.z.ai/api/coding/paas/v4/chat/completions`** — works with glm-4.7.
+  - Natural-phrasing checklist (all live): "i need to buy oranges and bread tomorrow" → grocery [oranges, bread] ✓; "gym done today" → challenge add_workout ✓; "please remove eggs from my shopping list" → grocery delete eggs ✓ (deterministic fast path — "remove"+"shopping"); "mark the clean desk thing as done" → complete todo [clean desk] ✓; "can you buy apples and bananas" → grocery ✓; "drank a big glass of water" → challenge add_water ✓ (fast path).
+  - **Latency:** glm-4.7 parse ≈ 2–3.5 s end-to-end (well under the 20 s timeout); fast heuristic ≈ 1 ms; 429-fallback ≈ 0.4–0.8 s.
+  - **Undo quirk found + fixed:** "oops undo that" made glm-4.7 hallucinate `uncomplete` with the literal text (harmless no-op, but noisy reply). Fix: prompt instructs `{"kind":"none"}` for undo/questions/chat, **and** the webhook now treats `kind:"none"` as terminal null (reply "I could not understand") instead of letting `??` fallback turn it into a heuristic uncomplete. Verified: undo → `unparsed`; real commands unaffected.
+  - Fallback invalid-key test: covered by reality — four production calls hit real 429s and every one fell back invisibly. No need to break the key on purpose.
+  - Challenge/test artifacts cleaned (planner test rows deleted; today's water/workouts reset to 0 after check-in tests).
+  - Known routing behavior: verb + list-alias messages never reach Z.ai (deterministic); list-keyword-free natural phrasing does. `ZAI_MODEL` secret = glm-4.7; code default updated to match.
