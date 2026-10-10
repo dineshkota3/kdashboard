@@ -82,6 +82,7 @@ After an Amazon firmware update: re-jailbreak per kindlemodding wiki if needed, 
 | `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID` | 0 (bot via configure script) | Telegram auth/allowlist |
 | `DASHBOARD_READ_TOKEN`, `DASHBOARD_TOGGLE_TOKEN`, `HEALTH_SYNC_TOKEN` | 0 (generated) | Kindle/iOS ↔ function auth |
 | `ZAI_API_KEY`, `ZAI_MODEL` | 2 | NLP parsing |
+| `DASHBOARD_TIMEZONE` | 3 (owner: `Europe/Amsterdam`) | Booking normalization, challenge day boundary, event-list formatting. Defaults to Asia/Kolkata if unset. Redeploy functions that read it after changing. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 3 | OAuth exchange (refresh token lives in `google_calendar_state` table) |
 | `SMARTTHINGS_PAT`, `SMARTTHINGS_DEVICE_ID`, `SMARTTHINGS_POLL_TOKEN` | 5 | Appliance polling |
 | `PLANNER_CLEANUP_TOKEN` | 2+ (generated) | Nightly planner-cleanup schedule auth |

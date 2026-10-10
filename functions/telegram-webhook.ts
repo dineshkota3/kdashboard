@@ -106,7 +106,7 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
   "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
   "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
-  "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"start_iso\":\"YYYY-MM-DDTHH:MM:00+05:30\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\"}. Use start_iso \"YYYY-MM-DD\" with all_day true for all-day events. Assume timezone Asia/Kolkata (UTC+05:30) and resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
+  "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
@@ -129,7 +129,7 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
     body: JSON.stringify({
       model: Deno.env.get("ZAI_MODEL") || "glm-4.7",
       messages: [
-        { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Current date/time: ${istNowString()}` },
+        { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Owner timezone: ${dashboardTimezone()}. Current date/time there: ${nowString(dashboardTimezone())}` },
         { role: "user", content: message }
       ],
       response_format: { type: "json_object" },
@@ -214,7 +214,39 @@ async function applyCalendarCreateAction(admin: any, action: CalendarEventAction
     return "Calendar unavailable — Google rejected the event. Try again later.";
   }
 
-  return `Scheduled: ${action.title} — ${formatEventStart(startIso, allDay)}`;
+  return `Scheduled: ${action.title} — ${formatEventStart(startIso, allDay, dashboardTimezone())}`;
+}
+
+function dashboardTimezone(): string {
+  try {
+    if (typeof Deno !== "undefined") {
+      return Deno.env.get("DASHBOARD_TIMEZONE") || "Asia/Kolkata";
+    }
+  } catch {
+    // fall through to default
+  }
+  return "Asia/Kolkata";
+}
+
+// DST-safe conversion: resolve a wall-clock date+time in a timezone to a UTC instant.
+function zonedToUtcIso(dateStr: string, timeStr: string, timeZone: string): string {
+  const [rawHours, rawMinutes] = timeStr.split(":");
+  const time = `${rawHours.padStart(2, "0")}:${rawMinutes.padStart(2, "0")}:00`;
+  const naiveMs = Date.parse(`${dateStr}T${time}Z`);
+  if (!Number.isFinite(naiveMs)) return "";
+  let ts = naiveMs;
+  for (let pass = 0; pass < 2; pass++) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+    }).formatToParts(new Date(ts));
+    const by = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const hour = by.hour === "24" ? "00" : by.hour;
+    const wallAsUtc = Date.parse(`${by.year}-${by.month}-${by.day}T${hour}:${by.minute}:${by.second}Z`);
+    if (!Number.isFinite(wallAsUtc)) return "";
+    ts += naiveMs - wallAsUtc;
+  }
+  return new Date(ts).toISOString();
 }
 
 async function loadCalendarState(admin: any): Promise<GoogleCalendarStateRow | null> {
@@ -284,8 +316,7 @@ function allDayEndDate(startDateIso: string): string {
   return nextDay.toISOString().slice(0, 10);
 }
 
-function formatEventStart(startIso: string, allDay: boolean): string {
-  const timezone = "Asia/Kolkata";
+function formatEventStart(startIso: string, allDay: boolean, timezone: string): string {
   const parsed = Date.parse(startIso);
   if (!Number.isFinite(parsed)) return startIso;
   if (allDay) {
@@ -295,16 +326,23 @@ function formatEventStart(startIso: string, allDay: boolean): string {
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: timezone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true
   });
-  return `${fmt.format(parsed)} IST`;
+  let label = timezone;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "short" }).formatToParts(parsed);
+    label = parts.find((part) => part.type === "timeZoneName")?.value || timezone;
+  } catch {
+    label = timezone;
+  }
+  return `${fmt.format(parsed)} ${label}`;
 }
 
-function istNowString(): string {
+function nowString(timezone: string): string {
   const now = new Date();
   const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Kolkata", weekday: "short", year: "numeric", month: "short", day: "numeric",
+    timeZone: timezone, weekday: "short", year: "numeric", month: "short", day: "numeric",
     hour: "numeric", minute: "2-digit", hour12: true
   });
-  return `${fmt.format(now)} (Asia/Kolkata)`;
+  return `${fmt.format(now)} (${timezone})`;
 }
 
 async function applyChallengeAction(admin: any, action: ChallengeAction): Promise<string> {
@@ -585,7 +623,7 @@ export function validateTelegramAction(input: unknown): TelegramAction | null {
   return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
-export function validateEventAction(input: unknown): CalendarEventAction | null {
+export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {
   if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<CalendarEventAction> & { date?: unknown; time?: unknown };
   if (candidate.kind !== "calendar" && candidate.action !== "create_event") return null;
@@ -609,8 +647,8 @@ export function validateEventAction(input: unknown): CalendarEventAction | null 
     }
   } else if (typeof candidate.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(candidate.date) &&
              typeof candidate.time === "string" && /^\d{1,2}:\d{2}$/.test(candidate.time)) {
-    const [hours, minutes] = candidate.time.split(":");
-    startIso = `${candidate.date}T${hours.padStart(2, "0")}:${minutes}:00+05:30`;
+    startIso = zonedToUtcIso(candidate.date, candidate.time, timeZone);
+    if (!startIso) return null;
   } else {
     return null;
   }
@@ -639,12 +677,11 @@ export function validateEventAction(input: unknown): CalendarEventAction | null 
   };
 }
 
-const IST_OFFSET = "+05:30";
 const WEEKDAY_INDEX: Record<string, number> = {
   sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, thu: 4, thur: 4, thurs: 4, fri: 5, sat: 6
 };
 
-export function parseEventHeuristically(message: string, now: Date = new Date()): CalendarEventAction | null {
+export function parseEventHeuristically(message: string, now: Date = new Date(), timeZone: string = dashboardTimezone()): CalendarEventAction | null {
   const normalized = message.trim().replace(/\s+/g, " ");
   const lower = normalized.toLowerCase();
   const isSlashCommand = /^\/event\b/i.test(normalized);
@@ -657,14 +694,14 @@ export function parseEventHeuristically(message: string, now: Date = new Date())
   if (!weekdayMatch && !relativeMatch && !timeMatch) return null;
 
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit"
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit"
   }).formatToParts(now);
   const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   let dayOffset = 0;
   if (weekdayMatch) {
-    const todayIst = new Date(Date.UTC(Number(byType.year), Number(byType.month) - 1, Number(byType.day)));
+    const todayLocal = new Date(Date.UTC(Number(byType.year), Number(byType.month) - 1, Number(byType.day)));
     const targetIndex = WEEKDAY_INDEX[weekdayMatch[1]];
-    dayOffset = (targetIndex - todayIst.getUTCDay() + 7) % 7;
+    dayOffset = (targetIndex - todayLocal.getUTCDay() + 7) % 7;
   } else if (relativeMatch?.[1] === "tomorrow") {
     dayOffset = 1;
   }
@@ -686,13 +723,14 @@ export function parseEventHeuristically(message: string, now: Date = new Date())
   const pad = (value: number) => String(value).padStart(2, "0");
   const baseDay = new Date(Date.UTC(Number(byType.year), Number(byType.month) - 1, Number(byType.day) + dayOffset));
   const dateStr = `${baseDay.getUTCFullYear()}-${pad(baseDay.getUTCMonth() + 1)}-${pad(baseDay.getUTCDate())}`;
-  let startMs = Date.parse(`${dateStr}T${pad(hours)}:${pad(minutes)}:00${IST_OFFSET}`);
-  if (!Number.isFinite(startMs)) return null;
+  const startIso = zonedToUtcIso(dateStr, `${pad(hours)}:${pad(minutes)}`, timeZone);
+  if (!startIso) return null;
+  let startMs = Date.parse(startIso);
   if (startMs <= now.getTime()) {
     startMs += 7 * 24 * 60 * 60 * 1000;
   }
 
-  const startIso = new Date(startMs).toISOString();
+  const finalIso = new Date(startMs).toISOString();
   const title = normalized
     .replace(/^\/event\b/i, " ")
     .replace(/\b(schedule|book|appointment)\b/i, " ")
@@ -710,7 +748,7 @@ export function parseEventHeuristically(message: string, now: Date = new Date())
     kind: "calendar",
     action: "create_event",
     title,
-    start_iso: startIso,
+    start_iso: finalIso,
     duration_min: 60,
     all_day: false
   };

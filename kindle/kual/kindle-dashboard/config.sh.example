@@ -12,5 +12,5 @@ INTERVAL="3600"
 DASHBOARD_KEEP_AWAKE="1"
 DASHBOARD_SLEEP_WINDOW="off"
 # Optional: leave unset to use the Kindle's own timezone.
-# DASHBOARD_TIMEZONE="Asia/Kolkata"
+# DASHBOARD_TIMEZONE="Europe/Amsterdam"
 INVERT_IMAGES="0"
