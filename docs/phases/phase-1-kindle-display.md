@@ -114,7 +114,7 @@ Re-copy the tar.gz after each rebuild. `bin/proof.sh` and `bin/diagnose.sh` in t
 - **2026-10-10 — USBNetwork (USBNetLite) set up; remote access over Wi-Fi SSH:**
   - Installed `notmarek/kindle-usbnetlite` 1.0.M (`Update_usbnetlite_1.0.P_install_khf_11thgenplus.bin`) via `mrpackages` + `;log mrpi`.
   - Pre-staged dedicated SSH key (`~/.ssh/kindle_ed25519`) into `usbnetlite/etc/dropbear/authorized_keys` and set `ALLOW_PASSWORD_LOGIN="false"` **before** first enable — default `root/kindle` password auth never active on the network.
-  - Kindle found on LAN at `<kindle-lan-ip>` (ping sweep + key-auth probe); pinned in `~/.ssh/config` as `Host kindle`. dropbear on :22, USE_WIFI=true.
+  - Kindle found on the LAN via ping sweep + key-auth probe (DHCP, so pin the IP in `~/.ssh/config` as `Host kindle`). dropbear on :22, USE_WIFI=true.
   - **SSH at boot enabled** (2026-10-10 12:07, `/mnt/us/usbnetlite/auto` flag verified) — dropbear survives reboots.
 - **2026-10-10 — ABI ladder step 1 runs on device; render + SSE verified:**
   - Zig-built static musl binary (soft-float `arm-linux-musleabi`) runs fine on PW5 fw 5.18.6 — no `Illegal instruction`, no ladder escalation needed.
