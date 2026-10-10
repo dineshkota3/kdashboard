@@ -1,6 +1,6 @@
 # Phase 0 — Foundation: Fork + Strip Meals + InsForge Bootstrap + Telegram (Heuristics Only)
 
-> Status: ☐ Not started
+> Status: ✅ Complete (2026-10-08 — see Results log; Telegram E2E verified)
 > Gate: Phase 1 starts only after every verification item below passes.
 
 ## Goal

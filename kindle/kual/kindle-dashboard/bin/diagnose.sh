@@ -75,7 +75,7 @@ lipc-set-prop com.lab126.cmd wirelessEnable 1 >/dev/null 2>&1 || true
 write_log "running native one-shot"
 cp "$NATIVE_APP" "$RUN_APP" >> "$LOG" 2>&1
 chmod 755 "$RUN_APP" >> "$LOG" 2>&1
-"$RUN_APP" --url "$DASHBOARD_DATA_URL" --events-url "$DASHBOARD_EVENTS_URL" --cache "$CACHE" --once --save-pgm "$SAVE_PGM" >> "$LOG" 2>&1
+"$RUN_APP" --url "$DASHBOARD_DATA_URL" --events-url "$DASHBOARD_EVENTS_URL" --read-token "$DASHBOARD_READ_TOKEN" --cache "$CACHE" --once --save-pgm "$SAVE_PGM" >> "$LOG" 2>&1
 status="$?"
 write_log "native exit=$status"
 if [ -s "$SAVE_PGM" ]; then
