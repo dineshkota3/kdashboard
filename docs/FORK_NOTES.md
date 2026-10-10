@@ -38,7 +38,7 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 ### Google OAuth (re)connect — Phase 3
 1. Ensure secrets `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are set.
 2. `curl https://<project>.insforge.app/functions/google-calendar-oauth` → open returned URL → consent → "Calendar connected."
-3. If refresh token silently expires (app still in test mode): publish the consent app to Production (personal unverified use is fine), then re-consent once.
+3. If refresh token silently expires (app still in test mode): publish the consent app to Production (personal unverified use is fine), then re-consent once. Done 2026-10-11 — app is In Production; tokens persist.
 4. Gotcha: the gateway exposes an internal host (`*.insforge.deno.net`) in `req.url` — the OAuth function therefore builds its redirect URI from the `INSFORGE_BASE_URL` secret. Keep `https://<project>.insforge.app/functions/google-calendar-oauth` as the only Authorized redirect URI in Google Console.
 
 ### Planner nightly cleanup — Phase 2+
