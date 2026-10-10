@@ -65,6 +65,22 @@ npx @insforge/cli secrets add ZAI_MODEL glm-4.7
 If `ZAI_API_KEY` is missing, the Telegram webhook uses its built-in command
 parser.
 
+### Housekeeping
+
+Completed list items stay on the board (bottom of each list) for 3 days, then
+disappear. A nightly schedule deletes them from the database:
+
+```sh
+npx @insforge/cli secrets add PLANNER_CLEANUP_TOKEN a-long-random-token
+npx @insforge/cli functions deploy planner-cleanup --file functions/planner-cleanup.ts --name "Planner Cleanup"
+npx @insforge/cli schedules create --name planner-nightly-cleanup --cron "30 21 * * *" \
+  --method POST --url https://your-project.insforge.app/functions/planner-cleanup \
+  --headers '{"X-Planner-Cleanup-Token": "${{secrets.PLANNER_CLEANUP_TOKEN}}"}'
+```
+
+Without the schedule, done items still stop showing after 3 days but remain in
+the database.
+
 ## 3. Connect Telegram
 
 Create a bot with BotFather and send it one message. Then discover your chat ID:

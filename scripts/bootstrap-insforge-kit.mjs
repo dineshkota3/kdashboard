@@ -17,7 +17,8 @@ const functions = [
   ["kindle-dashboard-events", "functions/kindle-dashboard-events.ts", "Kindle Dashboard Events"],
   ["kindle-dashboard-toggle", "functions/kindle-dashboard-toggle.ts", "Kindle Dashboard Toggle"],
   ["telegram-webhook", "functions/telegram-webhook.ts", "Telegram Planner Webhook"],
-  ["health-sync", "functions/health-sync.ts", "Health Sync"]
+  ["health-sync", "functions/health-sync.ts", "Health Sync"],
+  ["planner-cleanup", "functions/planner-cleanup.ts", "Planner Cleanup"]
 ];
 
 const flags = new Set(process.argv.slice(2));
@@ -59,6 +60,7 @@ if (!skipSecrets) {
   ensureSecret("HEALTH_SYNC_TOKEN", randomSecret());
   ensureSecret("DASHBOARD_READ_TOKEN", randomSecret());
   ensureSecret("DASHBOARD_TOGGLE_TOKEN", randomSecret());
+  ensureSecret("PLANNER_CLEANUP_TOKEN", randomSecret());
 }
 
 if (!skipDeploy) {

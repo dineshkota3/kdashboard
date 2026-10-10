@@ -25,6 +25,7 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | New: `functions/google-calendar-oauth.ts` | Auth-URL + code-exchange callback | 3 |
 | New: `migrations/..._create-appliance-status.sql` | Appliance snapshot + alert bookkeeping | 5 |
 | New: `functions/smartthings-poll.ts` | Scheduled PAT poller + transition alert | 5 |
+| New: `functions/planner-cleanup.ts` + nightly schedule | Deletes done planner items after 72h (PLANNER_CLEANUP_AFTER_HOURS); done items also sort to the bottom of each list and stay visible 72h (upstream hid them after 24h) | 2+ |
 | New: `migrations/..._add-exercise-minutes.sql` | Optional exercise metric | 4b |
 | New: `scripts/list-smartthings-devices.mjs` | PAT device lister | 5 |
 | `config.sh.example` | Sleep window + timezone defaults documented | 1 |
@@ -38,6 +39,15 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 1. Ensure secrets `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are set.
 2. `curl https://<project>.insforge.app/functions/google-calendar-oauth` → open returned URL → consent → "Calendar connected."
 3. If refresh token silently expires (app still in test mode): publish the consent app to Production (personal unverified use is fine), then re-consent once.
+
+### Planner nightly cleanup — Phase 2+
+Done items stay on the board (bottom of each list) for 72h, then vanish from the payload and get deleted from `planner_items` nightly. The schedule POSTs to `functions/planner-cleanup` with the `PLANNER_CLEANUP_TOKEN` secret. Recreate with:
+```sh
+npx @insforge/cli schedules create --name planner-nightly-cleanup --cron "30 21 * * *" \
+  --method POST --url https://<project>.insforge.app/functions/planner-cleanup \
+  --headers '{"X-Planner-Cleanup-Token": "${{secrets.PLANNER_CLEANUP_TOKEN}}"}'
+```
+Note: the InsForge SDK's chained `.order()` calls overwrite each other — done-last ordering is a JS `.sort()` in `kindle-dashboard-data.ts`, not an ORDER BY.
 
 ### SmartThings PAT renewal — Phase 5
 1. account.smartthings.com → generate new PAT (`devices:read`), note expiry.
@@ -70,5 +80,6 @@ After an Amazon firmware update: re-jailbreak per kindlemodding wiki if needed, 
 | `ZAI_API_KEY`, `ZAI_MODEL` | 2 | NLP parsing |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 3 | OAuth exchange (refresh token lives in `google_calendar_state` table) |
 | `SMARTTHINGS_PAT`, `SMARTTHINGS_DEVICE_ID`, `SMARTTHINGS_POLL_TOKEN` | 5 | Appliance polling |
+| `PLANNER_CLEANUP_TOKEN` | 2+ (generated) | Nightly planner-cleanup schedule auth |
 
 Rule: tokens never get committed — terminal/local ignored `.env` only.
