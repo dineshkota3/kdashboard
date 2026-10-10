@@ -189,7 +189,7 @@ Every later phase extends `npm test` — see the Tests section in each phase doc
   - pure parsers exported (`parseFastHeuristicMessage`, `parseMessageHeuristically`, `validateTelegramAction`)
   - **upstream bug fixed**: clear actions returned `items:["clear todo"]` (fallback clobbered the intentional `[]`); DB effect was unaffected but payload/validator contract was violated
 - **2026-10-08 — InsForge deployed and verified:**
-  - Logged in (owner@example.com), project `kindle-dashboard` created: `https://eq8jq3jz.us-east.insforge.app`
+  - Logged in to InsForge, project `kindle-dashboard` created: `https://eq8jq3jz.us-east.insforge.app`
   - `npm run kit:backend`: 5 migrations applied, 4 generated secrets created, 5 functions deployed
   - **Gotcha found + fixed**: project API key secret got corrupted during `secrets get` output parsing (CLI prints `KEY =<value>` with no space; `awk '{print $NF}'` grabbed a broken fragment) → functions got `AUTH_UNAUTHORIZED` 401s → endpoint 500'd as `[object Object]`. Fixed with exact `sed` extraction; added structured error logging to the data function's catch block.
   - Endpoint verified: HTTP 200 with `X-Dashboard-Read-Token`, 401 without; payload = `{todo, workout, grocery}` lists, no recipes/meal_plan, version hash present
