@@ -44,6 +44,7 @@ int g_last_screen_width = kBitmapFallbackWidth;
 int g_last_screen_height = kBitmapFallbackHeight;
 int g_active_list = -1;
 int g_active_challenge = 0;
+int g_active_calendar = 0;
 int g_invert_images = 0;
 int g_day_offset = 0;
 
@@ -57,7 +58,8 @@ enum TouchAction {
   kTouchOpenChallenge = 9,
   kTouchPreviousDay = 11,
   kTouchNextDay = 12,
-  kTouchToday = 13
+  kTouchToday = 13,
+  kTouchOpenCalendar = 14
 };
 
 struct Item {
@@ -79,7 +81,7 @@ struct CalendarEvent {
   int all_day;
 };
 
-const int kMaxCalendarEvents = 4;
+const int kMaxCalendarEvents = 10;
 
 struct Dashboard {
   char generated_at[40];
@@ -1114,6 +1116,8 @@ void formatCalendarEventRow(const CalendarEvent* event, char* out, size_t size) 
 
 void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const Dashboard* dashboard) {
   strokeRect(canvas, x, y, w, h, 3, 0);
+  Rect card_rect = {x, y, w, h};
+  addTouchRegion(card_rect, kTouchOpenCalendar, -1, -1, "", 0);
   drawTextClipped(canvas, x + 18, y + 10, 300, "CALENDAR", 4, 0);
   line(canvas, x + 10, y + 46, x + w - 10, y + 46, 2, 0);
 
@@ -1350,9 +1354,58 @@ void drawChallengeDashboard(Canvas* canvas, const Dashboard* dashboard, const ch
   drawRadialMetric(canvas, right_x, content_y + (card_h + gap) * 2, side_w, card_h, "CALORIES", dashboard->calories, dashboard->calories_target, dashboard->calories_unit);
 }
 
+void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
+  clearCanvas(canvas, 255);
+  clearTouchRegions();
+  g_last_screen_width = canvas->width;
+  g_last_screen_height = canvas->height;
+  const int shell_w = canvas->width;
+  const int shell_x = 0;
+  const int shell_y = kKindleStatusBarHeight;
+  const int shell_h = canvas->height - shell_y;
+  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
+  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
+
+  const int sub_y = shell_y + 10 + 132 + 8;
+  drawSubHeader(canvas, shell_x, sub_y, shell_w, "CALENDAR");
+
+  if (!dashboard->calendar_connected) {
+    drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
+    return;
+  }
+  if (dashboard->calendar_count == 0) {
+    drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NO UPCOMING EVENTS", 3, 0);
+    return;
+  }
+
+  const int row_x = shell_x + 18;
+  const int row_w = shell_w - 36;
+  const int row_h = 64;
+  const int row_gap = 10;
+  const int first_y = sub_y + 96;
+  const int max_rows = (shell_y + shell_h - first_y - 24) / (row_h + row_gap);
+  const int shown = dashboard->calendar_count < max_rows ? dashboard->calendar_count : max_rows;
+  for (int i = 0; i < shown; i++) {
+    const int row_y = first_y + i * (row_h + row_gap);
+    strokeRect(canvas, row_x, row_y, row_w, row_h, 2, 0);
+    char row[160];
+    formatCalendarEventRow(&dashboard->calendar_events[i], row, sizeof(row));
+    drawTextClipped(canvas, row_x + 18, row_y + 18, row_w - 36, row, 3, 0);
+  }
+  if (dashboard->calendar_count > shown) {
+    char more[48];
+    snprintf(more, sizeof(more), "+%d MORE", dashboard->calendar_count - shown);
+    drawTextClipped(canvas, row_x + 18, shell_y + shell_h - 60, 180, more, 3, 0);
+  }
+}
+
 void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
   if (g_active_challenge) {
     drawChallengeDashboard(canvas, dashboard, status);
+    return;
+  }
+  if (g_active_calendar) {
+    drawFullCalendarDashboard(canvas, dashboard, status);
     return;
   }
   if (g_active_list >= 0 && g_active_list < dashboard->list_count) {
@@ -2158,6 +2211,8 @@ int handlePendingTouch(const Options* options) {
     fprintf(stderr, "touch=back\n");
     if (g_active_challenge) {
       g_active_challenge = 0;
+    } else if (g_active_calendar) {
+      g_active_calendar = 0;
     } else {
       g_active_list = -1;
     }
@@ -2168,12 +2223,14 @@ int handlePendingTouch(const Options* options) {
     fprintf(stderr, "touch=home\n");
     g_active_list = -1;
     g_active_challenge = 0;
+    g_active_calendar = 0;
     return 1;
   }
 
   if (action == kTouchOpenList) {
     fprintf(stderr, "touch=open-list index=%d\n", g_pending_list_index);
     g_active_challenge = 0;
+    g_active_calendar = 0;
     g_active_list = g_pending_list_index;
     return 1;
   }
@@ -2181,7 +2238,16 @@ int handlePendingTouch(const Options* options) {
   if (action == kTouchOpenChallenge) {
     fprintf(stderr, "touch=open-challenge\n");
     g_active_list = -1;
+    g_active_calendar = 0;
     g_active_challenge = 1;
+    return 1;
+  }
+
+  if (action == kTouchOpenCalendar) {
+    fprintf(stderr, "touch=open-calendar\n");
+    g_active_list = -1;
+    g_active_challenge = 0;
+    g_active_calendar = 1;
     return 1;
   }
 
@@ -2509,8 +2575,11 @@ void applyInitialView(const char* view) {
   if (!view || !view[0]) return;
   g_active_list = -1;
   g_active_challenge = 0;
+  g_active_calendar = 0;
   if (strcmp(view, "challenge") == 0) g_active_challenge = 1;
-  else if (strcmp(view, "chores") == 0) {
+  else if (strcmp(view, "calendar") == 0) {
+    g_active_calendar = 1;
+  } else if (strcmp(view, "chores") == 0) {
     g_active_list = 0;
   } else if (strcmp(view, "workout") == 0) {
     g_active_list = 1;
