@@ -1,6 +1,6 @@
 # Phase 1 — Kindle Display on PW5 (KUAL Next + Zig Cross-Compile)
 
-> Status: ◐ In progress (render + SSE verified on device 2026-10-10; 24h battery test running, results due 2026-10-11)
+> Status: ✅ Complete (2026-10-11 — render + SSE + keep-awake verified on device; 24h battery gate waived by owner decision)
 > Gate: Phase 2 starts only after the dashboard renders on the Kindle and survives a 24 h battery check.
 
 ## Goal
@@ -129,4 +129,5 @@ Re-copy the tar.gz after each rebuild. `bin/proof.sh` and `bin/diagnose.sh` in t
   - **Gotcha:** `dashboard.sh` runs `pkill -f` on the binary path — never include the literal binary path in the same SSH command string as start/stop (kills your own session). Deploy = separate ssh calls: scp binary → chmod (own call) → `start-light.sh` (own call).
 - **2026-10-10 — 24h battery test started:** baseline **99% at 11:44 EEDT**, dashboard running (start light), keep-awake on, hourly interval. Check ~2026-10-11 11:45 EEDT; expect single-digit %/day.
   - Note: periodic repaint ticks render from cache and save frames labelled `cached/offline` — cosmetic; event/manual renders show `live`.
+- **2026-10-11 — battery test abandoned / gate waived (owner decision):** a USB-cable plug mid-test switched the device to drive mode and polluted the measurement. Owner opted to skip the 24h battery gate — all other Phase 1 checks passed. If daily battery life proves poor, mitigations in order: set `DASHBOARD_KEEP_AWAKE="0"` (device sleeps normally, refreshes only while awake), shorten the SSE hold, or rely on hourly refresh with the dashboard stopped between uses.
 
