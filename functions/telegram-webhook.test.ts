@@ -217,7 +217,7 @@ test("validateTelegramAction rejects kind none (LLM no-action guard)", () => {
 // 2026-10-12T04:30Z = Monday 10:00 IST
 
 test("parseEventHeuristically: friday 3pm -> next Friday 15:00 IST", () => {
-  const a = parseEventHeuristically("schedule dentist Friday 3pm", new Date("2026-10-12T04:30:00Z"));
+  const a = parseEventHeuristically("schedule dentist Friday 3pm", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata");
   assert.ok(a);
   assert.equal(a.kind, "calendar");
   assert.equal(a.title, "dentist");
@@ -227,35 +227,42 @@ test("parseEventHeuristically: friday 3pm -> next Friday 15:00 IST", () => {
 });
 
 test("parseEventHeuristically: /event tomorrow 9am standup", () => {
-  const a = parseEventHeuristically("/event tomorrow 9am standup", new Date("2026-10-12T04:30:00Z"));
+  const a = parseEventHeuristically("/event tomorrow 9am standup", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata");
   assert.ok(a);
   assert.equal(a.title, "standup");
   assert.equal(a.start_iso, "2026-10-13T03:30:00.000Z");
 });
 
 test("parseEventHeuristically: tonight 8pm", () => {
-  const a = parseEventHeuristically("schedule gym tonight 8pm", new Date("2026-10-12T04:30:00Z"));
+  const a = parseEventHeuristically("schedule gym tonight 8pm", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata");
   assert.ok(a);
   assert.equal(a.title, "gym");
   assert.equal(a.start_iso, "2026-10-12T14:30:00.000Z");
 });
 
 test("parseEventHeuristically: past weekday rolls to next week", () => {
-  const a = parseEventHeuristically("schedule brunch sunday 10am", new Date("2026-10-12T04:30:00Z"));
+  const a = parseEventHeuristically("schedule brunch sunday 10am", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata");
   assert.ok(a);
   assert.equal(a.start_iso, "2026-10-18T04:30:00.000Z");
 });
 
 test("parseEventHeuristically: same-day past time rolls to next week", () => {
-  const a = parseEventHeuristically("schedule standup today 9am", new Date("2026-10-12T04:30:00Z"));
+  const a = parseEventHeuristically("schedule standup today 9am", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata");
   assert.ok(a);
   assert.equal(a.start_iso, "2026-10-19T03:30:00.000Z");
 });
 
+test("parseEventHeuristically: Amsterdam timezone (DST-aware)", () => {
+  const a = parseEventHeuristically("schedule dentist friday 3pm", new Date("2026-10-12T04:30:00Z"), "Europe/Amsterdam");
+  assert.ok(a);
+  assert.equal(a.title, "dentist");
+  assert.equal(a.start_iso, "2026-10-16T13:00:00.000Z");
+});
+
 test("parseEventHeuristically: garbage and planner phrasing -> null", () => {
-  assert.equal(parseEventHeuristically("schedule something sometime", new Date("2026-10-12T04:30:00Z")), null);
-  assert.equal(parseEventHeuristically("add milk to groceries", new Date("2026-10-12T04:30:00Z")), null);
-  assert.equal(parseEventHeuristically("book", new Date("2026-10-12T04:30:00Z")), null);
+  assert.equal(parseEventHeuristically("schedule something sometime", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata"), null);
+  assert.equal(parseEventHeuristically("add milk to groceries", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata"), null);
+  assert.equal(parseEventHeuristically("book", new Date("2026-10-12T04:30:00Z"), "Asia/Kolkata"), null);
 });
 
 test("validateEventAction accepts iso start", () => {
@@ -268,13 +275,21 @@ test("validateEventAction accepts iso start", () => {
   assert.equal(a.all_day, false);
 });
 
-test("validateEventAction normalizes {date,time} to IST iso", () => {
+test("validateEventAction normalizes {date,time} via timezone (IST)", () => {
   const a = validateEventAction({
     kind: "calendar", action: "create_event", title: "Standup", date: "2026-10-16", time: "9:30"
-  });
+  }, "Asia/Kolkata");
   assert.ok(a);
-  assert.equal(a.start_iso, "2026-10-16T09:30:00+05:30");
+  assert.equal(a.start_iso, "2026-10-16T04:00:00.000Z");
   assert.equal(a.duration_min, 60);
+});
+
+test("validateEventAction normalizes {date,time} via timezone (Amsterdam, DST)", () => {
+  const a = validateEventAction({
+    kind: "calendar", action: "create_event", title: "Standup", date: "2026-10-16", time: "15:00"
+  }, "Europe/Amsterdam");
+  assert.ok(a);
+  assert.equal(a.start_iso, "2026-10-16T13:00:00.000Z");
 });
 
 test("validateEventAction date-only start implies all_day", () => {

@@ -132,3 +132,8 @@ calendar: {
 - **2026-10-11 IST — loose ends closed:**
   - Both test events deleted via the Calendar API (204s); dashboard payload clean (new version hash pushed via SSE).
   - OAuth consent app published to **Production** (branding page required: app name, support email, home page/privacy/ToS URLs — provided via GitHub repo + gists). Refresh token no longer expires weekly; no re-consent needed.
+- **2026-10-11 IST — timezone pipeline switched to Europe/Amsterdam (owner location):**
+  - Owner is in NL; the fork's Asia/Kolkata defaults put bookings ~3.5h off. New `DASHBOARD_TIMEZONE` secret (default stays Asia/Kolkata for BYO users) drives: LLM prompt tz + current-time line, `{date,time}` → UTC normalization (DST-safe 2-pass `zonedToUtcIso`), heuristic parser (tz param), booking reply labels (short tz name), challenge day boundary. `google_calendar_state.timezone` → Europe/Amsterdam (drives the events-list formatting); Kindle `config.sh` `DASHBOARD_TIMEZONE` updated on-device.
+  - Live check: events return `+02:00` (AMS wall times); `schedule tz check tomorrow 10am` booked Sun Oct 11 10:00 CEST; challenge date matches AMS today. Test event deleted.
+  - Bug found while testing: 2-pass tz conversion re-anchored to the naive instant, undoing pass 1 — fixed to move the timestamp by the wall delta each pass. Also zero-pad single-digit hours (Google `Date.parse` rejects `T9:30`).
+  - Phase-3 tests updated: explicit tz params (IST expectations kept), +2 Amsterdam DST cases. 43 unit + 10 integration green.
