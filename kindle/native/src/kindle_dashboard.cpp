@@ -45,6 +45,7 @@ int g_last_screen_height = kBitmapFallbackHeight;
 int g_active_list = -1;
 int g_active_challenge = 0;
 int g_active_calendar = 0;
+int g_active_calendar_feed = -1;
 int g_invert_images = 0;
 int g_day_offset = 0;
 
@@ -1179,10 +1180,11 @@ void feedLabel(const CalendarFeed* feed, char* out, size_t size) {
   upperCopy(out, size, feed->slot);
 }
 
-void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const CalendarFeed* feed) {
+void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const CalendarFeed* feed, int feed_index) {
   strokeRect(canvas, x, y, w, h, 3, 0);
   Rect card_rect = {x, y, w, h};
-  addTouchRegion(card_rect, kTouchOpenCalendar, -1, -1, "", 0);
+  // feed_index rides list_index so the full-screen view opens THAT person only.
+  addTouchRegion(card_rect, kTouchOpenCalendar, feed_index, -1, "", 0);
   char label[32];
   feedLabel(feed, label, sizeof(label));
   drawTextClipped(canvas, x + 18, y + 10, 300, label, 4, 0);
@@ -1434,8 +1436,13 @@ void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const
   drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
 
   const int sub_y = shell_y + 10 + 132 + 8;
+  int focus = g_active_calendar_feed;
+  if (focus < 0 || focus >= dashboard->calendar_feed_count) focus = -1;
+
   char sub_title[40];
-  if (dashboard->calendar_feed_count == 1 && dashboard->calendar_feeds[0].slot[0]) {
+  if (focus >= 0) {
+    upperCopy(sub_title, sizeof(sub_title), dashboard->calendar_feeds[focus].slot);
+  } else if (dashboard->calendar_feed_count == 1 && dashboard->calendar_feeds[0].slot[0]) {
     upperCopy(sub_title, sizeof(sub_title), dashboard->calendar_feeds[0].slot);
   } else {
     copyText(sub_title, sizeof(sub_title), "CALENDAR");
@@ -1449,9 +1456,11 @@ void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const
   const int first_y = sub_y + 96;
   const int bottom = shell_y + shell_h - 24;
 
-  if (dashboard->calendar_feed_count <= 1) {
-    // Legacy/single-calendar payloads render exactly as before.
-    const CalendarFeed* feed = dashboard->calendar_feed_count == 1 ? &dashboard->calendar_feeds[0] : NULL;
+  if (focus >= 0 || dashboard->calendar_feed_count <= 1) {
+    // Focused view (one strip tapped) and legacy/single-calendar payloads render
+    // exactly one feed, full height.
+    const CalendarFeed* feed = focus >= 0 ? &dashboard->calendar_feeds[focus]
+                              : (dashboard->calendar_feed_count == 1 ? &dashboard->calendar_feeds[0] : NULL);
     if (!feed || !feed->connected) {
       drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
       return;
@@ -1629,14 +1638,15 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   if (dashboard->calendar_feed_count >= 2) {
     // Phase 3.1: one labeled strip per person (3 event rows each).
     const int strip_h = shell_h < 900 ? 116 : 168;
-    drawCalendarCard(canvas, shell_x + 10, cal_top, shell_w - 20, strip_h, &dashboard->calendar_feeds[0]);
-    drawCalendarCard(canvas, shell_x + 10, cal_top + strip_h + gap, shell_w - 20, strip_h, &dashboard->calendar_feeds[1]);
+    drawCalendarCard(canvas, shell_x + 10, cal_top, shell_w - 20, strip_h, &dashboard->calendar_feeds[0], 0);
+    drawCalendarCard(canvas, shell_x + 10, cal_top + strip_h + gap, shell_w - 20, strip_h, &dashboard->calendar_feeds[1], 1);
     cal_bottom = cal_top + strip_h * 2 + gap;
   } else {
     // Single-calendar payloads (and forks) keep today's layout.
     const int cal_h = shell_h < 900 ? 130 : 200;
     drawCalendarCard(canvas, shell_x + 10, cal_top, shell_w - 20, cal_h,
-                     dashboard->calendar_feed_count > 0 ? &dashboard->calendar_feeds[0] : NULL);
+                     dashboard->calendar_feed_count > 0 ? &dashboard->calendar_feeds[0] : NULL,
+                     dashboard->calendar_feed_count > 0 ? 0 : -1);
     cal_bottom = cal_top + cal_h;
   }
   const int lists_y = cal_bottom + gap;
@@ -2349,6 +2359,7 @@ int handlePendingTouch(const Options* options) {
       g_active_challenge = 0;
     } else if (g_active_calendar) {
       g_active_calendar = 0;
+      g_active_calendar_feed = -1;
     } else {
       g_active_list = -1;
     }
@@ -2360,6 +2371,7 @@ int handlePendingTouch(const Options* options) {
     g_active_list = -1;
     g_active_challenge = 0;
     g_active_calendar = 0;
+    g_active_calendar_feed = -1;
     return 1;
   }
 
@@ -2367,6 +2379,7 @@ int handlePendingTouch(const Options* options) {
     fprintf(stderr, "touch=open-list index=%d\n", g_pending_list_index);
     g_active_challenge = 0;
     g_active_calendar = 0;
+    g_active_calendar_feed = -1;
     g_active_list = g_pending_list_index;
     return 1;
   }
@@ -2375,15 +2388,17 @@ int handlePendingTouch(const Options* options) {
     fprintf(stderr, "touch=open-challenge\n");
     g_active_list = -1;
     g_active_calendar = 0;
+    g_active_calendar_feed = -1;
     g_active_challenge = 1;
     return 1;
   }
 
   if (action == kTouchOpenCalendar) {
-    fprintf(stderr, "touch=open-calendar\n");
+    fprintf(stderr, "touch=open-calendar feed=%d\n", g_pending_list_index);
     g_active_list = -1;
     g_active_challenge = 0;
     g_active_calendar = 1;
+    g_active_calendar_feed = g_pending_list_index;
     return 1;
   }
 
@@ -2712,6 +2727,7 @@ void applyInitialView(const char* view) {
   g_active_list = -1;
   g_active_challenge = 0;
   g_active_calendar = 0;
+  g_active_calendar_feed = -1;
   if (strcmp(view, "challenge") == 0) g_active_challenge = 1;
   else if (strcmp(view, "calendar") == 0) {
     g_active_calendar = 1;

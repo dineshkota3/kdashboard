@@ -327,6 +327,26 @@ test("PLANNER_SYSTEM_PROMPT mentions calendar_slot routing (phase 3.1)", () => {
   assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /meal|recipe/i);
 });
 
+test("PLANNER_SYSTEM_PROMPT: fuzzy person matching + clarify-on-ambiguity (phase 3.1 LLM routing)", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /fuzzy-matching/i);
+  assert.match(PLANNER_SYSTEM_PROMPT, /kind":"clarify/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /dinner with keethu/i);
+  assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /meal|recipe/i);
+});
+
+test("validateTelegramAction accepts a good clarify action", () => {
+  const a = validateTelegramAction({ kind: "clarify", question: "Keethu's calendar or yours?" });
+  assert.ok(a);
+  assert.equal((a as any).kind, "clarify");
+  assert.equal((a as any).question, "Keethu's calendar or yours?");
+});
+
+test("validateTelegramAction rejects bad clarify actions", () => {
+  assert.equal(validateTelegramAction({ kind: "clarify", question: "   " }), null);
+  assert.equal(validateTelegramAction({ kind: "clarify" }), null);
+  assert.equal(validateTelegramAction({ kind: "clarify", question: 42 }), null);
+});
+
 test("webhook source uses Z.ai endpoint and env names, not OpenAI", () => {
   const source = readFileSync(new URL("./telegram-webhook.ts", import.meta.url), "utf8");
   assert.match(source, /https:\/\/api\.z\.ai\/api\/coding\/paas\/v4\/chat\/completions/);
@@ -453,4 +473,37 @@ test("parseEventHeuristically stays owner-routed (no calendar_slot field)", () =
   const a = parseEventHeuristically("schedule dentist friday 3pm", NOW, "Asia/Kolkata");
   assert.ok(a);
   assert.equal("calendar_slot" in a, false);
+});
+
+test("applySlotHint: 'add X to <name> calendar' routes and strips (no trigger verb)", () => {
+  const hint = applySlotHint("add kindle test to keethu calendar friday 4pm", SLOTS);
+  assert.equal(hint.slot, "keethu", "calendar phrasing alone must be booking-shaped");
+  assert.ok(!/keethu/i.test(hint.message), "name+calendar fragment stripped");
+  assert.match(hint.message, /kindle test/);
+});
+
+test("applySlotHint: 'add X to <name>'s calendar' routes", () => {
+  const hint = applySlotHint("add kindle test to keethu's calendar friday 4pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+});
+
+test("applySlotHint: '<name> calendar' beat 'for <name>' (longer strip wins)", () => {
+  const hint = applySlotHint("schedule dentist for keethu calendar friday 3pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+  const event = parseEventHeuristically(hint.message, NOW, "Europe/Amsterdam");
+  assert.ok(event);
+  assert.equal(event.title, "dentist", "word 'calendar' must not leak into the title");
+});
+
+test("applySlotHint: generic calendar mention without a connected name stays owner", () => {
+  const hint = applySlotHint("add dentist to my calendar friday 3pm", SLOTS);
+  assert.equal(hint.slot, null, "no connected name present");
+  assert.equal(hint.message, "add dentist to my calendar friday 3pm");
+});
+
+test("applySlotHint: planner message containing 'calendar' is left intact when no name matches", () => {
+  const message = "add calendar widget to todo";
+  const hint = applySlotHint(message, SLOTS);
+  assert.equal(hint.slot, null);
+  assert.equal(hint.message, message);
 });

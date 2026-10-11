@@ -33,7 +33,15 @@ export type CalendarEventAction = {
   calendar_slot?: string;
 };
 
-type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction;
+// LLM-only action: the message is a real request but its target is ambiguous
+// (e.g. "dinner with keethu"). Nothing is stored - the question goes back to
+// the Telegram chat.
+export type ClarifyAction = {
+  kind: "clarify";
+  question: string;
+};
+
+type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction | ClarifyAction;
 
 type TelegramUpdate = {
   message?: {
@@ -108,15 +116,17 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
   "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
-  "For calendar bookings, include \"calendar_slot\":\"<name>\" only when the message books for one of the people listed in the connected-calendar line of the system context; otherwise omit calendar_slot.",
+  "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
+  "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
 async function parseTelegramMessage(message: string): Promise<TelegramAction | null> {
-  // Phase 3.1 multi-calendar routing: a booking message may name a target
-  // calendar ("schedule for keethu: dentist friday 3pm"). Only booking-shaped
-  // messages pay the connected-slots lookup; everything else parses as before.
-  const slots = looksLikeBookingMessage(message) ? await loadConnectedCalendarSlots() : [];
+  // Phase 3.1 multi-calendar routing: the connected names are injected into the
+  // LLM context for EVERY message so it can fuzzy-route bookings ("for keethuu")
+  // and ask back on ambiguity. The regex hint stays as the deterministic
+  // exact-match layer (and the only router when Z.ai is unavailable).
+  const slots = await loadConnectedCalendarSlots();
   const hint = applySlotHint(message, slots);
   const action = await parseAction(hint.message, slots);
   if (action && isEventAction(action) && hint.slot) {
@@ -179,7 +189,17 @@ async function parseAction(message: string, slots: string[]): Promise<TelegramAc
   return validateTelegramAction(parsed) ?? parseMessageHeuristically(message);
 }
 
+function validateClarifyAction(input: unknown): ClarifyAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<ClarifyAction>;
+  if (candidate.kind !== "clarify") return null;
+  const question = typeof candidate.question === "string" ? candidate.question.trim().slice(0, 300) : "";
+  if (!question) return null;
+  return { kind: "clarify", question };
+}
+
 async function applyTelegramAction(admin: any, action: TelegramAction): Promise<string> {
+  if (action.kind === "clarify") return action.question;
   if (isChallengeAction(action)) return applyChallengeAction(admin, action);
   if (isTargetAction(action)) return applyHealthTargetAction(admin, action);
   if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
@@ -588,7 +608,9 @@ export function isValidSlotName(value: string): boolean {
 }
 
 export function looksLikeBookingMessage(message: string): boolean {
-  return /(^\/event\b)|\b(schedule|book|appointment)\b/i.test(message);
+  // "calendar" counts as booking-shaped: "add dentist to keethu calendar" must
+  // route, not become a chores item (or an owner-calendar event).
+  return /(^\/event\b)|\b(schedule|book|appointment)\b|\bcalendar\b/i.test(message);
 }
 
 // Extract a target calendar from a booking message WITHOUT mistaking calendar
@@ -604,10 +626,12 @@ export function applySlotHint(message: string, slots: string[]): { message: stri
   const normalized = message.trim().replace(/\s+/g, " ");
   const name = "([a-z][a-z0-9_-]{0,15})";
   const candidates: Array<{ slot: string; start: number; end: number }> = [];
-  for (const match of normalized.matchAll(new RegExp(`\\bfor\\s+${name}\\b`, "gi"))) {
+  // "<name>(('s)|s)? calendar" wins over the bare "for <name>" form so the
+  // longer fragment (including the word "calendar") is stripped from the title.
+  for (const match of normalized.matchAll(new RegExp(`\\b(?:in|to|on|for)?\\s*${name}'?s?\\s+calendar\\b`, "gi"))) {
     candidates.push({ slot: match[1].toLowerCase(), start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
   }
-  for (const match of normalized.matchAll(new RegExp(`\\b(?:in|to|on)?\\s*${name}'s\\s+calendar\\b`, "gi"))) {
+  for (const match of normalized.matchAll(new RegExp(`\\bfor\\s+${name}\\b`, "gi"))) {
     candidates.push({ slot: match[1].toLowerCase(), start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
   }
   const prefixMatch = normalized.match(new RegExp(`^${name}\\s*:\\s*`, "i"));
@@ -728,7 +752,7 @@ export function parseMessageHeuristically(message: string): TelegramAction {
 }
 
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
 export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {

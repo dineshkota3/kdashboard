@@ -379,6 +379,11 @@ async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
   }
 }
 
+// Only ~4 months of upcoming events are fetched: without an upper bound Google
+// expands yearly recurring events (birthdays) years ahead, which floods the
+// 10-event budget and pushes useful near-term events off the list.
+const CALENDAR_LOOKAHEAD_MS = 122 * 24 * 60 * 60 * 1000;
+
 async function loadFeedEvents(admin: any, state: GoogleCalendarState): Promise<CalendarFeedPayload> {
   const slot = state.slot || "owner";
   try {
@@ -390,6 +395,7 @@ async function loadFeedEvents(admin: any, state: GoogleCalendarState): Promise<C
     const calendarId = encodeURIComponent(state.calendar_id || "primary");
     const params = new URLSearchParams({
       timeMin: new Date().toISOString(),
+      timeMax: new Date(Date.now() + CALENDAR_LOOKAHEAD_MS).toISOString(),
       singleEvents: "true",
       orderBy: "startTime",
       maxResults: "10",
@@ -411,7 +417,13 @@ async function loadFeedEvents(admin: any, state: GoogleCalendarState): Promise<C
     const rawItems = Array.isArray(eventsJson?.items) ? eventsJson.items : [];
     const events = rawItems
       .map((item: unknown) => mapCalendarEvent(item))
-      .filter((item: CalendarEvent | null): item is CalendarEvent => item !== null);
+      .filter((item: CalendarEvent | null): item is CalendarEvent => item !== null)
+      // Google sorts by startTime, so double-entered events (same flight added
+      // twice) sit adjacent — collapse exact copies instead of wasting strip rows.
+      .filter((item, index, all) => index === 0 ||
+        !(item.title === all[index - 1].title &&
+          item.start_iso === all[index - 1].start_iso &&
+          item.end_iso === all[index - 1].end_iso));
     return { slot, status: "ok", events };
   } catch (error) {
     console.warn(`calendar_feed_unavailable slot=${slot}`, error instanceof Error ? error.message : String(error));
