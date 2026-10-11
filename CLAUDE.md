@@ -13,7 +13,7 @@ phase logs, fixtures, test data, scripts, or commit messages. This repo is publi
 - When writing docs or results logs, use placeholders: `<owner chat id>`,
   `your-project.insforge.app`, `a-long-random-token`. Name secrets, never quote values.
 - This is enforced practice, not theory: personal email, LAN IP, and the owner's
-  chat id were all scrubbed from phase logs (commits `3b4d123`, `ce0bd1a`).
+  chat id were all scrubbed from phase logs (commits `caac1ef`, `22319ae`).
 - Before committing anything generated (logs, JSON dumps, command output), scan it
   for PII first. If PII lands in a commit, scrub it in a follow-up commit; rewrite
   history only if the owner asks.
