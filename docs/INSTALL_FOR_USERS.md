@@ -158,6 +158,20 @@ The webhook supports these message types. If `ZAI_API_KEY` is configured, it
 can understand more natural phrasing; if not, the built-in parser supports the
 patterns below.
 
+### Look-ups (read-only)
+
+Ask the bot what's on the board or in today's calendar — nothing is changed:
+
+```text
+grab the grocery list
+what are my todos
+workout list
+any events today?
+```
+
+The grocery answer is grouped by shop (Albert Heijn / Turkish Market / Indian
+Store); the events answer covers every connected calendar for today.
+
 ### Planner Lists
 
 Supported lists:

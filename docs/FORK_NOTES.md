@@ -27,6 +27,7 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | New: `scripts/connect-calendar.mjs` | `npm run google:connect -- --slot <name>` — consent link for an ADDITIONAL user; reuses the existing OAuth client | 3.1 |
 | New: `functions/calendar-reminders.ts` + `calendar_reminders_sent` table + 15-min schedule | Telegram pings per event at T-12h and T-1h (all-day events: T-12h only); ledger-deduped | 3.1 |
 | Grocery shop sublists | `planner_items.store` (`ah`/`turkish`/`indian`, default ah); Telegram names the shop ("add paneer to indian grocery"); Kindle grocery card + full list render grouped by shop with headers | 3.1 |
+| Telegram read-only queries | new `query` action: grocery (grouped by shop), todo, workout, events_today (all connected calendars); heuristic fast path + LLM schema; mutation-shaped messages never match | 3.1 |
 | New: `migrations/..._create-appliance-status.sql` | Appliance snapshot + alert bookkeeping | 5 |
 | New: `functions/smartthings-poll.ts` | Scheduled PAT poller + transition alert | 5 |
 | New: `functions/planner-cleanup.ts` + nightly schedule | Deletes done planner items after 72h (PLANNER_CLEANUP_AFTER_HOURS); done items also sort to the bottom of each list and stay visible 72h (upstream hid them after 24h) | 2+ |

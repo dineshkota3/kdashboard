@@ -10,6 +10,7 @@ import {
   applySlotHint,
   isValidSlotName,
   extractGroceryStore,
+  parseQueryMessage,
   PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
@@ -530,6 +531,55 @@ test("validateTelegramAction keeps a valid store and drops junk store values", (
 test("PLANNER_SYSTEM_PROMPT documents the grocery store sublists", () => {
   assert.match(PLANNER_SYSTEM_PROMPT, /"store":"ah\|turkish\|indian/);
   assert.match(PLANNER_SYSTEM_PROMPT, /Albert Heijn/);
+});
+
+// ---- phase 3.1: read-only Telegram queries ----
+
+test("parseQueryMessage: list lookups route to their query", () => {
+  assert.equal(parseQueryMessage("what's on my grocery list")?.query, "grocery");
+  assert.equal(parseQueryMessage("grocery list")?.query, "grocery");
+  assert.equal(parseQueryMessage("groceries")?.query, "grocery");
+  assert.equal(parseQueryMessage("grab the grocery list")?.query, "grocery");
+  assert.equal(parseQueryMessage("what are my todos")?.query, "todo");
+  assert.equal(parseQueryMessage("todo")?.query, "todo");
+  assert.equal(parseQueryMessage("show chores")?.query, "todo");
+  assert.equal(parseQueryMessage("workout list")?.query, "workout");
+});
+
+test("parseQueryMessage: today's events route to events_today", () => {
+  assert.equal(parseQueryMessage("any events today?")?.query, "events_today");
+  assert.equal(parseQueryMessage("what's on today")?.query, "events_today");
+  assert.equal(parseQueryMessage("events today")?.query, "events_today");
+  assert.equal(parseQueryMessage("my plans today")?.query, "events_today");
+});
+
+test("parseQueryMessage: mutations are never queries", () => {
+  assert.equal(parseQueryMessage("add milk to groceries"), null);
+  assert.equal(parseQueryMessage("add clean desk to todo"), null);
+  assert.equal(parseQueryMessage("mark milk done"), null);
+  assert.equal(parseQueryMessage("clear todo"), null);
+  assert.equal(parseQueryMessage("remove eggs from groceries"), null);
+  assert.equal(parseQueryMessage("schedule dentist today 3pm"), null, "bookings beat queries");
+  assert.equal(parseQueryMessage("/event tomorrow 9am standup"), null);
+  assert.equal(parseQueryMessage("schedule dinner with keethu today"), null, "ambiguity flow beats queries");
+});
+
+test("parseQueryMessage: unrelated messages stay null", () => {
+  assert.equal(parseQueryMessage("what's the capital of France"), null);
+  assert.equal(parseQueryMessage("drank 1L water"), null);
+  assert.equal(parseQueryMessage("slept 7.5 hours"), null);
+  assert.equal(parseQueryMessage("events tomorrow"), null, "only today is wired");
+});
+
+test("validateTelegramAction accepts a good query and rejects bad ones", () => {
+  assert.equal(validateTelegramAction({ kind: "query", query: "events_today" })?.query, "events_today");
+  assert.equal(validateTelegramAction({ kind: "query", query: "meal_plan" }), null);
+  assert.equal(validateTelegramAction({ kind: "query" }), null);
+});
+
+test("PLANNER_SYSTEM_PROMPT documents the query action", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /"kind\\":\\"query|kind":"query/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /events_today/);
 });
 
 test("applySlotHint: 'add X to <name> calendar' routes and strips (no trigger verb)", () => {

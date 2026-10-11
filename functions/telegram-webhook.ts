@@ -42,7 +42,14 @@ export type ClarifyAction = {
   question: string;
 };
 
-type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction | ClarifyAction;
+// Read-only lookups: "what's on my grocery list", "any events today?".
+// Nothing is stored - the answer goes back to the Telegram chat.
+export type QueryAction = {
+  kind: "query";
+  query: "grocery" | "todo" | "workout" | "events_today";
+};
+
+type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction | ClarifyAction | QueryAction;
 
 type TelegramUpdate = {
   message?: {
@@ -120,6 +127,7 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
+  "Read-only questions that ask what is ON a list or what events/plans exist TODAY (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today\"}. \"events_today\" covers any phrasing about today's calendar events or plans across the connected calendars.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
@@ -202,10 +210,128 @@ function validateClarifyAction(input: unknown): ClarifyAction | null {
 
 async function applyTelegramAction(admin: any, action: TelegramAction): Promise<string> {
   if (action.kind === "clarify") return action.question;
+  if (action.kind === "query") return applyQueryAction(admin, action);
   if (isChallengeAction(action)) return applyChallengeAction(admin, action);
   if (isTargetAction(action)) return applyHealthTargetAction(admin, action);
   if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
   return applyPlannerAction(admin, action);
+}
+
+// ---- phase 3.1: read-only query handlers ----
+
+const SHOP_LABELS: Record<string, string> = {
+  ah: "Albert Heijn",
+  turkish: "Turkish Market",
+  indian: "Indian Store"
+};
+
+async function applyQueryAction(admin: any, action: QueryAction): Promise<string> {
+  if (action.query === "events_today") return queryTodayEvents(admin);
+  return queryListItems(admin, action.query);
+}
+
+async function queryListItems(admin: any, listKey: "grocery" | "todo" | "workout"): Promise<string> {
+  const { data: rows, error } = await admin.database
+    .from("planner_items")
+    .select("text,store")
+    .eq("list_key", listKey)
+    .eq("done", false)
+    .order("created_at", { ascending: false })
+    .limit(40);
+  if (error) throw error;
+  const items = Array.isArray(rows) ? rows as Array<{ text: string; store: string | null }> : [];
+  if (items.length === 0) {
+    return listKey === "grocery" ? "🛒 Grocery list is empty." : `📝 ${plannerListLabel(listKey).charAt(0).toUpperCase() + plannerListLabel(listKey).slice(1)} list is empty.`;
+  }
+
+  if (listKey === "grocery") {
+    // Grouped by shop, in the same shop order as the Kindle board.
+    const lines: string[] = ["🛒 Grocery list:"];
+    for (const store of GROCERY_STORES) {
+      const storeItems = items.filter((item) => (item.store || "ah") === store);
+      if (storeItems.length === 0) continue;
+      lines.push("", `${SHOP_LABELS[store]}:`);
+      for (const item of storeItems) lines.push(`• ${item.text}`);
+    }
+    const unassigned = items.filter((item) => !item.store || !GROCERY_STORES.includes(item.store));
+    if (unassigned.length > 0) {
+      lines.push("", "Other:");
+      for (const item of unassigned) lines.push(`• ${item.text}`);
+    }
+    return lines.join("\n");
+  }
+
+  const label = plannerListLabel(listKey);
+  return `📝 ${label.charAt(0).toUpperCase() + label.slice(1)}:\n${items.map((item) => `• ${item.text}`).join("\n")}`;
+}
+
+async function queryTodayEvents(admin: any): Promise<string> {
+  const connected = (await loadCalendarStates(admin)).filter((state) => state.refresh_token);
+  if (connected.length === 0) {
+    return "Calendar not connected — run google:setup (first user) or google:connect (additional user).";
+  }
+
+  const timezone = dashboardTimezone();
+  const date = dashboardLocalDate();
+  const startIso = zonedToUtcIso(date, "00:00", timezone);
+  const nextDay = new Date(Date.parse(`${date}T00:00:00Z`) + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const endIso = zonedToUtcIso(nextDay, "00:00", timezone);
+  if (!startIso || !endIso) return "Calendar unavailable — could not resolve today's window. Try again later.";
+
+  const sections: string[] = [];
+  for (const state of connected) {
+    const name = slotLabel(state.slot);
+    const accessToken = await ensureGoogleAccessToken(admin, state);
+    if (!accessToken) {
+      sections.push(`${name}:\n• unavailable`);
+      continue;
+    }
+    const calendarId = encodeURIComponent(state.calendar_id || "primary");
+    const params = new URLSearchParams({
+      timeMin: startIso,
+      timeMax: endIso,
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: "20",
+      timeZone: state.timezone || timezone
+    });
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?${params}`,
+        { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(8000) }
+      );
+      if (!response.ok) {
+        sections.push(`${name}:\n• unavailable`);
+        continue;
+      }
+      const json = await response.json();
+      const items = Array.isArray(json?.items) ? json.items : [];
+      const lines = items
+        .map((item: any) => {
+          const start = item?.start ?? {};
+          const startIso = String(start.dateTime || start.date || "");
+          if (!startIso) return null;
+          const title = typeof item?.summary === "string" && item.summary.trim() ? item.summary.trim().slice(0, 80) : "(untitled)";
+          return `• ${formatTodayTime(startIso, Boolean(start.date) && !start.dateTime, state.timezone || timezone)} — ${title}`;
+        })
+        .filter(Boolean);
+      sections.push(`${name}:\n${lines.length > 0 ? lines.join("\n") : "• nothing scheduled"}`);
+    } catch {
+      sections.push(`${name}:\n• unavailable`);
+    }
+  }
+
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "long" }).format(new Date());
+  return `📅 Today (${weekday}):\n${sections.join("\n\n")}`;
+}
+
+// Same-day events need no date label — just the wall-clock time (or "all day").
+function formatTodayTime(startIso: string, allDay: boolean, timezone: string): string {
+  const parsed = Date.parse(startIso);
+  if (!Number.isFinite(parsed)) return startIso;
+  if (allDay) return "all day";
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit", hour12: true });
+  return fmt.format(parsed);
 }
 
 function isEventAction(action: TelegramAction): action is CalendarEventAction {
@@ -599,11 +725,44 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
   const targetAction = parseTargetHeuristically(normalized);
   if (targetAction) return targetAction;
 
+  const queryAction = parseQueryMessage(normalized);
+  if (queryAction) return queryAction;
+
   const hasPlannerVerb = /\b(add|put|include|buy|get|need|mark|check off|complete|completed|done|undo|uncheck|delete|remove|drop|clear|empty|reset)\b/.test(lower);
-  if (hasPlannerVerb && hasExplicitList(normalized)) {
+  // Question-shaped messages are lookups, not planner adds — let the LLM route them.
+  const questionShaped = /^(what|any|show|is|are|do|does|list|read|grab|give|send|see|check)\b/.test(lower);
+  if (hasPlannerVerb && hasExplicitList(normalized) && !questionShaped) {
     return parseMessageHeuristically(normalized);
   }
 
+  return null;
+}
+
+// ---- phase 3.1: read-only Telegram queries ----
+
+// Detects lookups ("what's on my grocery list", "any events today?"). Anything
+// that mutates state (add/mark/clear/schedule/...) is NEVER a query, so the
+// guard runs before the patterns.
+export function parseQueryMessage(message: string): QueryAction | null {
+  const lower = message.trim().replace(/\s+/g, " ").toLowerCase();
+  if (/\b(add|put|include|buy|get|need|mark|check off|complete|completed|done|undo|uncheck|delete|remove|drop|clear|empty|reset|schedule|book|appointment)\b/.test(lower)) {
+    return null;
+  }
+  if (/^\/event\b/.test(lower)) return null;
+
+  const listy = /(what|show|list|any|read|grab|give|send|see|check|my)\b/.test(lower) || message.trim().split(/\s+/).length <= 3;
+  if (/\bgrocer(y|ies)|shopping list\b/.test(lower) && listy) {
+    return { kind: "query", query: "grocery" };
+  }
+  if (/\btodos?|to-?dos?|chores?|tasks?\b/.test(lower) && listy) {
+    return { kind: "query", query: "todo" };
+  }
+  if (/\bworkout|exercise|training|gym\b/.test(lower) && listy) {
+    return { kind: "query", query: "workout" };
+  }
+  if (/\bevents?\b|\bcalendar\b|\bplans?\b|\bwhat'?s on\b/.test(lower) && /\btoday\b|\btonight\b/.test(lower)) {
+    return { kind: "query", query: "events_today" };
+  }
   return null;
 }
 
@@ -798,8 +957,16 @@ export function parseMessageHeuristically(message: string): TelegramAction {
   };
 }
 
+function validateQueryAction(input: unknown): QueryAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<QueryAction>;
+  if (candidate.kind !== "query") return null;
+  if (candidate.query !== "grocery" && candidate.query !== "todo" && candidate.query !== "workout" && candidate.query !== "events_today") return null;
+  return { kind: "query", query: candidate.query };
+}
+
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateQueryAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
 export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {
