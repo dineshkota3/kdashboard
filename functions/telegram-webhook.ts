@@ -42,11 +42,13 @@ export type ClarifyAction = {
   question: string;
 };
 
-// Read-only lookups: "what's on my grocery list", "any events today?".
+// Read-only lookups: "what's on my grocery list", "any events today?",
+// "events next week" (days = 7), "coming 10 days" (days = 10).
 // Nothing is stored - the answer goes back to the Telegram chat.
 export type QueryAction = {
   kind: "query";
-  query: "grocery" | "todo" | "workout" | "events_today";
+  query: "grocery" | "todo" | "workout" | "events_today" | "events_range";
+  days?: number;
 };
 
 type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction | ClarifyAction | QueryAction;
@@ -127,7 +129,7 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
-  "Read-only questions that ask what is ON a list or what events/plans exist TODAY (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today\"}. \"events_today\" covers any phrasing about today's calendar events or plans across the connected calendars.",
+  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
@@ -226,7 +228,8 @@ const SHOP_LABELS: Record<string, string> = {
 };
 
 async function applyQueryAction(admin: any, action: QueryAction): Promise<string> {
-  if (action.query === "events_today") return queryTodayEvents(admin);
+  if (action.query === "events_today") return queryEventsWindow(admin, 1);
+  if (action.query === "events_range") return queryEventsWindow(admin, action.days || 7);
   return queryListItems(admin, action.query);
 }
 
@@ -265,7 +268,7 @@ async function queryListItems(admin: any, listKey: "grocery" | "todo" | "workout
   return `📝 ${label.charAt(0).toUpperCase() + label.slice(1)}:\n${items.map((item) => `• ${item.text}`).join("\n")}`;
 }
 
-async function queryTodayEvents(admin: any): Promise<string> {
+async function queryEventsWindow(admin: any, days: number): Promise<string> {
   const connected = (await loadCalendarStates(admin)).filter((state) => state.refresh_token);
   if (connected.length === 0) {
     return "Calendar not connected — run google:setup (first user) or google:connect (additional user).";
@@ -274,9 +277,9 @@ async function queryTodayEvents(admin: any): Promise<string> {
   const timezone = dashboardTimezone();
   const date = dashboardLocalDate();
   const startIso = zonedToUtcIso(date, "00:00", timezone);
-  const nextDay = new Date(Date.parse(`${date}T00:00:00Z`) + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const endIso = zonedToUtcIso(nextDay, "00:00", timezone);
-  if (!startIso || !endIso) return "Calendar unavailable — could not resolve today's window. Try again later.";
+  const endDate = new Date(Date.parse(`${date}T00:00:00Z`) + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const endIso = zonedToUtcIso(endDate, "00:00", timezone);
+  if (!startIso || !endIso) return "Calendar unavailable — could not resolve the window. Try again later.";
 
   const sections: string[] = [];
   for (const state of connected) {
@@ -312,7 +315,11 @@ async function queryTodayEvents(admin: any): Promise<string> {
           const startIso = String(start.dateTime || start.date || "");
           if (!startIso) return null;
           const title = typeof item?.summary === "string" && item.summary.trim() ? item.summary.trim().slice(0, 80) : "(untitled)";
-          return `• ${formatTodayTime(startIso, Boolean(start.date) && !start.dateTime, state.timezone || timezone)} — ${title}`;
+          const allDay = Boolean(start.date) && !start.dateTime;
+          const stamp = days === 1
+            ? formatTodayTime(startIso, allDay, state.timezone || timezone)
+            : formatRangeTime(startIso, allDay, state.timezone || timezone);
+          return `• ${stamp} — ${title}`;
         })
         .filter(Boolean);
       sections.push(`${name}:\n${lines.length > 0 ? lines.join("\n") : "• nothing scheduled"}`);
@@ -321,8 +328,11 @@ async function queryTodayEvents(admin: any): Promise<string> {
     }
   }
 
-  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "long" }).format(new Date());
-  return `📅 Today (${weekday}):\n${sections.join("\n\n")}`;
+  const dayFmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric" });
+  const header = days === 1
+    ? `📅 Today (${new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "long" }).format(new Date())}):`
+    : `📅 Next ${days} days (${dayFmt.format(Date.parse(startIso))} → ${dayFmt.format(Date.parse(endIso) - 60_000)}):`;
+  return `${header}\n${sections.join("\n\n")}`;
 }
 
 // Same-day events need no date label — just the wall-clock time (or "all day").
@@ -331,6 +341,20 @@ function formatTodayTime(startIso: string, allDay: boolean, timezone: string): s
   if (!Number.isFinite(parsed)) return startIso;
   if (allDay) return "all day";
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit", hour12: true });
+  return fmt.format(parsed);
+}
+
+// Multi-day ranges need the date on every event.
+function formatRangeTime(startIso: string, allDay: boolean, timezone: string): string {
+  const parsed = Date.parse(startIso);
+  if (!Number.isFinite(parsed)) return startIso;
+  if (allDay) {
+    const fmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric" });
+    return `all day ${fmt.format(parsed)}`;
+  }
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true
+  });
   return fmt.format(parsed);
 }
 
@@ -763,6 +787,25 @@ export function parseQueryMessage(message: string): QueryAction | null {
   if (/\bevents?\b|\bcalendar\b|\bplans?\b|\bwhat'?s on\b/.test(lower) && /\btoday\b|\btonight\b/.test(lower)) {
     return { kind: "query", query: "events_today" };
   }
+  const rangeDays = parseEventRangeDays(lower);
+  if (rangeDays !== null && /\bevents?\b|\bcalendar\b|\bplans?\b|\bplanned?\b|\bwhat'?s on\b|\bscheduled?\b|\bagenda\b/.test(lower)) {
+    return { kind: "query", query: "events_range", days: rangeDays };
+  }
+  return null;
+}
+
+// "next week" / "coming week" = 7 days (owner's definition); "next 10 days" = 10;
+// "2 weeks" = 14; "next month" = 30. Returns null when no window is named.
+export function parseEventRangeDays(message: string): number | null {
+  const lower = message.toLowerCase();
+  const numberMatch = lower.match(/\b(\d{1,3})\s*(days?|weeks?)\b/);
+  if (numberMatch) {
+    const n = Number(numberMatch[1]) * (/week/.test(numberMatch[2]) ? 7 : 1);
+    return n >= 1 && n <= 90 ? n : null;
+  }
+  if (/\b(next|coming|this|following)\s+week\b/.test(lower)) return 7;
+  if (/\bfortnight\b/.test(lower)) return 14;
+  if (/\b(next|coming)\s+month\b/.test(lower)) return 30;
   return null;
 }
 
@@ -961,6 +1004,11 @@ function validateQueryAction(input: unknown): QueryAction | null {
   if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<QueryAction>;
   if (candidate.kind !== "query") return null;
+  if (candidate.query === "events_range") {
+    const days = Number(candidate.days);
+    if (!Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) return null;
+    return { kind: "query", query: "events_range", days };
+  }
   if (candidate.query !== "grocery" && candidate.query !== "todo" && candidate.query !== "workout" && candidate.query !== "events_today") return null;
   return { kind: "query", query: candidate.query };
 }

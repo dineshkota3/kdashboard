@@ -11,6 +11,7 @@ import {
   isValidSlotName,
   extractGroceryStore,
   parseQueryMessage,
+  parseEventRangeDays,
   PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
@@ -568,7 +569,52 @@ test("parseQueryMessage: unrelated messages stay null", () => {
   assert.equal(parseQueryMessage("what's the capital of France"), null);
   assert.equal(parseQueryMessage("drank 1L water"), null);
   assert.equal(parseQueryMessage("slept 7.5 hours"), null);
-  assert.equal(parseQueryMessage("events tomorrow"), null, "only today is wired");
+  assert.equal(parseQueryMessage("events tomorrow"), null, "only windows are wired, not 'tomorrow' alone");
+});
+
+// ---- phase 3.1: event range queries ----
+
+test("parseEventRangeDays: explicit day and week counts", () => {
+  assert.equal(parseEventRangeDays("events next 7 days"), 7);
+  assert.equal(parseEventRangeDays("coming 10 days"), 10);
+  assert.equal(parseEventRangeDays("next 2 weeks"), 14);
+  assert.equal(parseEventRangeDays("events in 3 days"), 3);
+});
+
+test("parseEventRangeDays: named windows per owner definition", () => {
+  assert.equal(parseEventRangeDays("any events next week"), 7, "next week = 7 days");
+  assert.equal(parseEventRangeDays("what's on this week"), 7);
+  assert.equal(parseEventRangeDays("coming week"), 7);
+  assert.equal(parseEventRangeDays("next fortnight"), 14);
+  assert.equal(parseEventRangeDays("events next month"), 30);
+  assert.equal(parseEventRangeDays("any events today"), null, "today has its own action");
+  assert.equal(parseEventRangeDays("no window here"), null);
+});
+
+test("parseQueryMessage: range queries route with days", () => {
+  const week = parseQueryMessage("any events scheduled for next week");
+  assert.equal(week?.query, "events_range");
+  assert.equal(week?.days, 7);
+
+  const ten = parseQueryMessage("events coming 10 days");
+  assert.equal(ten?.query, "events_range");
+  assert.equal(ten?.days, 10);
+
+  const month = parseQueryMessage("what's on next month");
+  assert.equal(month?.query, "events_range");
+  assert.equal(month?.days, 30);
+});
+
+test("parseQueryMessage: range mutations still rejected", () => {
+  assert.equal(parseQueryMessage("schedule dentist next week"), null, "booking beats range query");
+  assert.equal(parseQueryMessage("add dentist next week to calendar"), null);
+});
+
+test("validateTelegramAction gates events_range days", () => {
+  assert.equal(validateTelegramAction({ kind: "query", query: "events_range", days: 10 })?.days, 10);
+  assert.equal(validateTelegramAction({ kind: "query", query: "events_range", days: 1.5 }), null);
+  assert.equal(validateTelegramAction({ kind: "query", query: "events_range", days: 400 }), null);
+  assert.equal(validateTelegramAction({ kind: "query", query: "events_range" }), null, "days required");
 });
 
 test("validateTelegramAction accepts a good query and rejects bad ones", () => {
