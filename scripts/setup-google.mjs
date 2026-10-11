@@ -208,13 +208,13 @@ Two short forms open in your browser:
 
   try {
     const state = await runInsforge(
-      ["db", "query", "SELECT refresh_token IS NOT NULL AS connected FROM google_calendar_state", "--json"],
+      ["db", "query", "SELECT slot, refresh_token IS NOT NULL AS connected FROM google_calendar_state ORDER BY created_at", "--json"],
       { capture: true }
     );
     const parsed = JSON.parse(state);
-    const connected = parsed?.data?.[0]?.connected;
-    if (connected) {
-      console.log("Verified: refresh token stored.");
+    const firstRow = parsed?.data?.[0];
+    if (firstRow?.connected) {
+      console.log(`Verified: refresh token stored${firstRow.slot ? ` for slot "${firstRow.slot}"` : ""}.`);
     } else {
       console.error("WARNING: no refresh token stored — run the consent link again.");
     }

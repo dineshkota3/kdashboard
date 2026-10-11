@@ -30,6 +30,7 @@ export type CalendarEventAction = {
   duration_min: number;
   all_day: boolean;
   location?: string;
+  calendar_slot?: string;
 };
 
 type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction;
@@ -106,11 +107,25 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
   "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
   "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
-  "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
+  "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
+  "For calendar bookings, include \"calendar_slot\":\"<name>\" only when the message books for one of the people listed in the connected-calendar line of the system context; otherwise omit calendar_slot.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
 async function parseTelegramMessage(message: string): Promise<TelegramAction | null> {
+  // Phase 3.1 multi-calendar routing: a booking message may name a target
+  // calendar ("schedule for keethu: dentist friday 3pm"). Only booking-shaped
+  // messages pay the connected-slots lookup; everything else parses as before.
+  const slots = looksLikeBookingMessage(message) ? await loadConnectedCalendarSlots() : [];
+  const hint = applySlotHint(message, slots);
+  const action = await parseAction(hint.message, slots);
+  if (action && isEventAction(action) && hint.slot) {
+    action.calendar_slot = hint.slot;
+  }
+  return action;
+}
+
+async function parseAction(message: string, slots: string[]): Promise<TelegramAction | null> {
   const fastAction = parseFastHeuristicMessage(message);
   if (fastAction) return fastAction;
 
@@ -119,6 +134,9 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
     return parseMessageHeuristically(message);
   }
 
+  const slotLine = slots.length > 0
+    ? ` Connected calendars: ${slots.join(", ")}.`
+    : "";
   const response = await fetch("https://api.z.ai/api/coding/paas/v4/chat/completions", {
     method: "POST",
     headers: {
@@ -129,7 +147,7 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
     body: JSON.stringify({
       model: Deno.env.get("ZAI_MODEL") || "glm-4.7",
       messages: [
-        { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Owner timezone: ${dashboardTimezone()}. Current date/time there: ${nowString(dashboardTimezone())}` },
+        { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Owner timezone: ${dashboardTimezone()}. Current date/time there: ${nowString(dashboardTimezone())}.${slotLine}` },
         { role: "user", content: message }
       ],
       response_format: { type: "json_object" },
@@ -173,9 +191,21 @@ function isEventAction(action: TelegramAction): action is CalendarEventAction {
 }
 
 async function applyCalendarCreateAction(admin: any, action: CalendarEventAction): Promise<string> {
-  const state = await loadCalendarState(admin);
-  if (!state?.refresh_token) {
-    return "Calendar not connected — open the OAuth link first (curl the google-calendar-oauth function).";
+  const connected = (await loadCalendarStates(admin)).filter((state) => state.refresh_token);
+  if (connected.length === 0) {
+    return "Calendar not connected — run google:setup (first user) or google:connect (additional user), then open the OAuth link.";
+  }
+
+  // Default target is the FIRST connected row (created_at order) — always the
+  // original owner, matching the pre-3.1 behavior. An explicit slot that no
+  // connected row answers fails loudly instead of silently booking elsewhere.
+  const targetSlot = action.calendar_slot?.trim().toLowerCase() || "";
+  const state = targetSlot
+    ? connected.find((row) => (row.slot || "owner") === targetSlot)
+    : connected[0];
+  if (!state) {
+    const names = connected.map((row) => row.slot || "owner").join(", ");
+    return `No calendar connected for "${targetSlot}". Connected: ${names}`;
   }
 
   const accessToken = await ensureGoogleAccessToken(admin, state);
@@ -214,7 +244,12 @@ async function applyCalendarCreateAction(admin: any, action: CalendarEventAction
     return "Calendar unavailable — Google rejected the event. Try again later.";
   }
 
-  return `Scheduled: ${action.title} — ${formatEventStart(startIso, allDay, dashboardTimezone())}`;
+  return `Scheduled for ${slotLabel(state.slot)}: ${action.title} — ${formatEventStart(startIso, allDay, state.timezone || dashboardTimezone())}`;
+}
+
+function slotLabel(slot: string | null): string {
+  const name = slot || "owner";
+  return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
 function dashboardTimezone(): string {
@@ -249,21 +284,47 @@ function zonedToUtcIso(dateStr: string, timeStr: string, timeZone: string): stri
   return new Date(ts).toISOString();
 }
 
-async function loadCalendarState(admin: any): Promise<GoogleCalendarStateRow | null> {
+async function loadCalendarStates(admin: any): Promise<GoogleCalendarStateRow[]> {
   const { data: rows, error } = await admin.database
     .from("google_calendar_state")
-    .select("refresh_token,access_token,token_expiry,calendar_id")
-    .eq("id", 1)
-    .limit(1);
+    .select("slot,refresh_token,access_token,token_expiry,calendar_id,timezone")
+    .order("created_at", { ascending: true })
+    .limit(4);
   if (error) throw error;
-  return Array.isArray(rows) && rows.length > 0 ? rows[0] as GoogleCalendarStateRow : null;
+  return Array.isArray(rows) ? rows as GoogleCalendarStateRow[] : [];
+}
+
+// Names of the connected calendars for Telegram routing. Never blocks parsing:
+// a DB hiccup yields no slots and every booking falls through to the owner.
+async function loadConnectedCalendarSlots(): Promise<string[]> {
+  try {
+    const { createAdminClient } = await import("npm:@insforge/sdk");
+    const admin = createAdminClient({
+      baseUrl: requiredEnv("INSFORGE_BASE_URL"),
+      apiKey: requiredEnv("INSFORGE_API_KEY")
+    });
+    const { data: rows, error } = await admin.database
+      .from("google_calendar_state")
+      .select("slot")
+      .order("created_at", { ascending: true })
+      .limit(4);
+    if (error) throw error;
+    return (Array.isArray(rows) ? rows : [])
+      .map((row: any) => String(row?.slot ?? "").trim().toLowerCase())
+      .filter((slot: string) => isValidSlotName(slot));
+  } catch (error) {
+    console.warn("calendar_slots_lookup_failed", error instanceof Error ? error.message : String(error));
+    return [];
+  }
 }
 
 type GoogleCalendarStateRow = {
+  slot: string | null;
   refresh_token: string | null;
   access_token: string | null;
   token_expiry: string | null;
   calendar_id: string | null;
+  timezone: string | null;
 };
 
 async function ensureGoogleAccessToken(admin: any, state: GoogleCalendarStateRow): Promise<string | null> {
@@ -306,7 +367,7 @@ async function ensureGoogleAccessToken(admin: any, state: GoogleCalendarStateRow
       token_expiry: new Date(Date.now() + lifetimeSeconds * 1000).toISOString(),
       updated_at: new Date().toISOString()
     })
-    .eq("id", 1);
+    .eq("slot", state.slot || "owner");
   return accessToken;
 }
 
@@ -518,6 +579,53 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
   return null;
 }
 
+// ---- phase 3.1: multi-calendar routing ----
+
+const SLOT_PATTERN = /^[a-z][a-z0-9_-]{0,15}$/;
+
+export function isValidSlotName(value: string): boolean {
+  return SLOT_PATTERN.test(value);
+}
+
+export function looksLikeBookingMessage(message: string): boolean {
+  return /(^\/event\b)|\b(schedule|book|appointment)\b/i.test(message);
+}
+
+// Extract a target calendar from a booking message WITHOUT mistaking calendar
+// words for people: "schedule dentist for friday 3pm" must keep booking to the
+// owner, so a candidate name is only accepted when it matches a CONNECTED slot.
+// The matched fragment is stripped so the event title never inherits the name.
+export function applySlotHint(message: string, slots: string[]): { message: string; slot: string | null } {
+  const known = slots.filter((slot) => isValidSlotName(slot));
+  if (known.length === 0 || !looksLikeBookingMessage(message)) {
+    return { message, slot: null };
+  }
+
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const name = "([a-z][a-z0-9_-]{0,15})";
+  const candidates: Array<{ slot: string; start: number; end: number }> = [];
+  for (const match of normalized.matchAll(new RegExp(`\\bfor\\s+${name}\\b`, "gi"))) {
+    candidates.push({ slot: match[1].toLowerCase(), start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
+  }
+  for (const match of normalized.matchAll(new RegExp(`\\b(?:in|to|on)?\\s*${name}'s\\s+calendar\\b`, "gi"))) {
+    candidates.push({ slot: match[1].toLowerCase(), start: match.index ?? 0, end: (match.index ?? 0) + match[0].length });
+  }
+  const prefixMatch = normalized.match(new RegExp(`^${name}\\s*:\\s*`, "i"));
+  if (prefixMatch) {
+    candidates.push({ slot: prefixMatch[1].toLowerCase(), start: 0, end: prefixMatch[0].length });
+  }
+
+  const hit = candidates.find((candidate) => known.includes(candidate.slot));
+  if (!hit) return { message, slot: null };
+
+  const stripped = `${normalized.slice(0, hit.start)} ${normalized.slice(hit.end)}`
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[:;,.\-]+\s*/, "")
+    .trim();
+  return { message: stripped, slot: hit.slot };
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -666,6 +774,15 @@ export function validateEventAction(input: unknown, timeZone: string = dashboard
     ? candidate.location.trim().slice(0, 200)
     : undefined;
 
+  // Phase 3.1: an explicit target that is not a well-formed slot name should
+  // fail loudly rather than silently book into the owner's calendar.
+  const rawSlot = candidate.calendar_slot === undefined || candidate.calendar_slot === null
+    ? ""
+    : String(candidate.calendar_slot).trim().toLowerCase();
+  if (candidate.calendar_slot !== undefined && candidate.calendar_slot !== null && !isValidSlotName(rawSlot)) {
+    return null;
+  }
+
   return {
     kind: "calendar",
     action: "create_event",
@@ -673,7 +790,8 @@ export function validateEventAction(input: unknown, timeZone: string = dashboard
     start_iso: startIso,
     duration_min: durationMin,
     all_day: allDay,
-    ...(location ? { location } : {})
+    ...(location ? { location } : {}),
+    ...(rawSlot ? { calendar_slot: rawSlot } : {})
   };
 }
 

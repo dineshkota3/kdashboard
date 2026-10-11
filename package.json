@@ -12,6 +12,7 @@
     "telegram:chat-id": "node scripts/get-telegram-chat-id.mjs",
     "telegram:configure": "node scripts/configure-telegram.mjs",
     "google:setup": "node scripts/setup-google.mjs",
+    "google:connect": "node scripts/connect-calendar.mjs",
     "kit:backend": "node scripts/bootstrap-insforge-kit.mjs"
   },
   "devDependencies": {

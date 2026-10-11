@@ -87,6 +87,30 @@ npx @insforge/cli functions deploy google-calendar-oauth --file functions/google
 curl https://your-project.insforge.app/functions/google-calendar-oauth   # open the auth_url
 ```
 
+### Add Another Person's Calendar
+
+Want a second calendar (a partner's) on the same dashboard? Reuse the OAuth
+client you already set up — no new Google Cloud project, no gcloud:
+
+```sh
+npm run google:connect -- --slot keethu --timezone Europe/Amsterdam
+```
+
+The slot is the person's name (lowercase). Their events get their own labeled
+strip on the Kindle. Book into their calendar from Telegram:
+
+```text
+schedule for keethu: dentist friday 3pm
+```
+
+Messages without a person (`schedule dentist friday 3pm`) keep booking into the
+first connected calendar. Two warnings the script will also print:
+
+- Run the consent in **their** browser profile or an incognito window — Google
+  silently reuses the signed-in session.
+- Never rerun `npm run google:setup` to add a user: it replaces the OAuth
+  client and invalidates every already-connected calendar.
+
 ### Housekeeping
 
 Completed list items stay on the board (bottom of each list) for 3 days, then

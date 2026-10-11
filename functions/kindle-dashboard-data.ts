@@ -44,12 +44,20 @@ type CalendarEvent = {
   location: string | null;
 };
 
-type CalendarPayload = {
-  status: "ok" | "not_connected" | "unavailable";
+type CalendarFeedPayload = {
+  slot: string;
+  status: "ok" | "unavailable";
   events: CalendarEvent[];
 };
 
+type CalendarPayload = {
+  status: "ok" | "not_connected" | "unavailable";
+  events: CalendarEvent[];
+  calendars: CalendarFeedPayload[];
+};
+
 type GoogleCalendarState = {
+  slot: string | null;
   refresh_token: string | null;
   access_token: string | null;
   token_expiry: string | null;
@@ -332,21 +340,51 @@ function shouldShowPlannerItem(item: PlannerItem, staleCompletedCutoff: number):
 
 async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
   try {
+    // One row per connected Google account (Phase 3.1). created_at ordering
+    // keeps the original owner first. Capped at 4 feeds — that is the device
+    // layout budget and keeps the hourly fetch bounded.
     const { data: stateRows, error: stateError } = await admin.database
       .from("google_calendar_state")
-      .select("refresh_token,access_token,token_expiry,calendar_id,timezone")
-      .eq("id", 1)
-      .limit(1);
+      .select("slot,refresh_token,access_token,token_expiry,calendar_id,timezone")
+      .order("created_at", { ascending: true })
+      .limit(4);
     if (stateError) throw stateError;
 
-    const state = firstRow<GoogleCalendarState>(stateRows);
-    if (!state?.refresh_token) {
-      return { status: "not_connected", events: [] };
+    const states = (Array.isArray(stateRows) ? stateRows as GoogleCalendarState[] : [])
+      .filter((state) => state?.refresh_token);
+    if (states.length === 0) {
+      return { status: "not_connected", events: [], calendars: [] };
     }
 
+    // Each feed fails independently — one revoked calendar never degrades the others.
+    const feeds = await Promise.all(states.map((state) => loadFeedEvents(admin, state)));
+
+    const anyOk = feeds.some((feed) => feed.status === "ok");
+    const status: CalendarPayload["status"] = anyOk ? "ok" : "unavailable";
+    // Feeds carry different ISO shapes (offset vs Z vs date-only) — sort on the
+    // parsed instant, not the string.
+    const mergedEvents = feeds
+      .flatMap((feed) => feed.events)
+      .sort((a, b) => {
+        const timeA = Date.parse(a.start_iso);
+        const timeB = Date.parse(b.start_iso);
+        if (Number.isFinite(timeA) && Number.isFinite(timeB)) return timeA - timeB;
+        return a.start_iso.localeCompare(b.start_iso);
+      })
+      .slice(0, 10);
+    return { status, events: mergedEvents, calendars: feeds };
+  } catch (error) {
+    console.warn("calendar_payload_unavailable", error instanceof Error ? error.message : String(error));
+    return { status: "unavailable", events: [], calendars: [] };
+  }
+}
+
+async function loadFeedEvents(admin: any, state: GoogleCalendarState): Promise<CalendarFeedPayload> {
+  const slot = state.slot || "owner";
+  try {
     const accessToken = await ensureCalendarAccessToken(admin, state);
     if (!accessToken) {
-      return { status: "unavailable", events: [] };
+      return { slot, status: "unavailable", events: [] };
     }
 
     const calendarId = encodeURIComponent(state.calendar_id || "primary");
@@ -365,8 +403,8 @@ async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
       }
     );
     if (!eventsResponse.ok) {
-      console.warn(`calendar_events_failed status=${eventsResponse.status}`);
-      return { status: "unavailable", events: [] };
+      console.warn(`calendar_events_failed status=${eventsResponse.status} slot=${slot}`);
+      return { slot, status: "unavailable", events: [] };
     }
 
     const eventsJson = await eventsResponse.json();
@@ -374,10 +412,10 @@ async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
     const events = rawItems
       .map((item: unknown) => mapCalendarEvent(item))
       .filter((item: CalendarEvent | null): item is CalendarEvent => item !== null);
-    return { status: "ok", events };
+    return { slot, status: "ok", events };
   } catch (error) {
-    console.warn("calendar_payload_unavailable", error instanceof Error ? error.message : String(error));
-    return { status: "unavailable", events: [] };
+    console.warn(`calendar_feed_unavailable slot=${slot}`, error instanceof Error ? error.message : String(error));
+    return { slot, status: "unavailable", events: [] };
   }
 }
 
@@ -425,7 +463,7 @@ async function ensureCalendarAccessToken(admin: any, state: GoogleCalendarState)
       token_expiry: new Date(Date.now() + lifetimeSeconds * 1000).toISOString(),
       updated_at: new Date().toISOString()
     })
-    .eq("id", 1);
+    .eq("slot", state.slot || "owner");
   return accessToken;
 }
 

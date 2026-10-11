@@ -22,7 +22,9 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | `kindle/native/src/kindle_dashboard.cpp` | Recipe/meal structs/parsers/screens/touch-actions deleted; home grid right column = Workout + Grocery; `drawCalendarCard` + `drawApplianceCard` + optional exercise radial | 0, 1, 3, 4b, 5 |
 | `kindle/native/Makefile` | Meal/recipe asset copies removed | 0 |
 | New: `migrations/..._create-google-calendar-state.sql` | Single-row OAuth token store | 3 |
-| New: `functions/google-calendar-oauth.ts` | Auth-URL + code-exchange callback | 3 |
+| New: `migrations/..._google-calendar-multicalendar.sql` | `google_calendar_state` → multi-slot: `slot` unique key + `created_at`, drops `id`; one row per connected Google account | 3.1 |
+| New: `functions/google-calendar-oauth.ts` | Auth-URL + code-exchange callback; `?slot=` routed via OAuth `state`, upsert `onConflict:"slot"` | 3, 3.1 |
+| New: `scripts/connect-calendar.mjs` | `npm run google:connect -- --slot <name>` — consent link for an ADDITIONAL user; reuses the existing OAuth client | 3.1 |
 | New: `migrations/..._create-appliance-status.sql` | Appliance snapshot + alert bookkeeping | 5 |
 | New: `functions/smartthings-poll.ts` | Scheduled PAT poller + transition alert | 5 |
 | New: `functions/planner-cleanup.ts` + nightly schedule | Deletes done planner items after 72h (PLANNER_CLEANUP_AFTER_HOURS); done items also sort to the bottom of each list and stay visible 72h (upstream hid them after 24h) | 2+ |
@@ -40,6 +42,14 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 2. `curl https://<project>.insforge.app/functions/google-calendar-oauth` → open returned URL → consent → "Calendar connected."
 3. If refresh token silently expires (app still in test mode): publish the consent app to Production (personal unverified use is fine), then re-consent once. Done 2026-10-11 — app is In Production; tokens persist.
 4. Gotcha: the gateway exposes an internal host (`*.insforge.deno.net`) in `req.url` — the OAuth function therefore builds its redirect URI from the `INSFORGE_BASE_URL` secret. Keep `https://<project>.insforge.app/functions/google-calendar-oauth` as the only Authorized redirect URI in Google Console.
+
+### Second calendar connect — Phase 3.1
+1. NEVER rerun `npm run google:setup` for a second user: it creates a NEW OAuth client and overwrites `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, which invalidates every stored refresh token (tokens are bound to the client).
+2. Connect an additional user: `npm run google:connect -- --slot keethu --timezone Europe/Amsterdam`. Consent in THAT user's browser profile or incognito — Google silently reuses the active session, and the owner's calendar would land on the wrong slot.
+3. Re-connect (token revoked/expired) = rerun the same command for that slot; the upsert overwrites that row's tokens only.
+4. Routing: Telegram bookings default to the FIRST row (`created_at` order — always the original owner). `schedule for keethu: dentist friday 3pm` targets a slot; unknown names fail loudly with the connected list. A candidate name is only accepted when it matches a connected slot, so `schedule dentist for friday 3pm` still books to the owner.
+5. Kill switch per feed: `UPDATE google_calendar_state SET refresh_token = NULL WHERE slot='<name>'` → that strip shows NOT CONNECTED, others unaffected. Remove a person: `DELETE FROM google_calendar_state WHERE slot='<name>'` → device falls back to the single-strip layout.
+6. Booking interpretation always uses `DASHBOARD_TIMEZONE` (owner's tz); the per-row `timezone` only drives Google list params + reply labels.
 
 ### Planner nightly cleanup — Phase 2+
 Done items stay on the board (bottom of each list) for 72h, then vanish from the payload and get deleted from `planner_items` nightly. The schedule POSTs to `functions/planner-cleanup` with the `PLANNER_CLEANUP_TOKEN` secret. Recreate with:

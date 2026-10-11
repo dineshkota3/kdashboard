@@ -27,24 +27,54 @@
       "key": "todo",
       "title": "Chores",
       "items": [
-        { "id": "1", "text": "Read paper notes", "done": false, "updated_at": "2026-06-28T08:00:00.000Z" },
-        { "id": "2", "text": "Charge Kindle", "done": true, "updated_at": "2026-06-28T07:00:00.000Z" }
+        {
+          "id": "1",
+          "text": "Read paper notes",
+          "done": false,
+          "updated_at": "2026-06-28T08:00:00.000Z"
+        },
+        {
+          "id": "2",
+          "text": "Charge Kindle",
+          "done": true,
+          "updated_at": "2026-06-28T07:00:00.000Z"
+        }
       ]
     },
     {
       "key": "workout",
       "title": "Workout",
       "items": [
-        { "id": "5", "text": "Push day", "done": false, "updated_at": "2026-06-28T08:05:00.000Z" },
-        { "id": "6", "text": "10k steps walk", "done": false, "updated_at": "2026-06-28T08:06:00.000Z" }
+        {
+          "id": "5",
+          "text": "Push day",
+          "done": false,
+          "updated_at": "2026-06-28T08:05:00.000Z"
+        },
+        {
+          "id": "6",
+          "text": "10k steps walk",
+          "done": false,
+          "updated_at": "2026-06-28T08:06:00.000Z"
+        }
       ]
     },
     {
       "key": "grocery",
       "title": "Grocery",
       "items": [
-        { "id": "3", "text": "Milk", "done": false, "updated_at": "2026-06-28T08:10:00.000Z" },
-        { "id": "4", "text": "Eggs", "done": false, "updated_at": "2026-06-28T08:11:00.000Z" }
+        {
+          "id": "3",
+          "text": "Milk",
+          "done": false,
+          "updated_at": "2026-06-28T08:10:00.000Z"
+        },
+        {
+          "id": "4",
+          "text": "Eggs",
+          "done": false,
+          "updated_at": "2026-06-28T08:11:00.000Z"
+        }
       ]
     }
   ],
@@ -53,15 +83,29 @@
     "events": [
       {
         "title": "Dentist",
-        "start_iso": "2026-07-03T15:00:00+05:30",
-        "end_iso": "2026-07-03T16:00:00+05:30",
+        "start_iso": "2026-07-03T15:00:00+02:00",
+        "end_iso": "2026-07-03T16:00:00+02:00",
         "all_day": false,
         "location": "Smile Clinic"
       },
       {
+        "title": "Yoga class",
+        "start_iso": "2026-07-03T18:30:00+02:00",
+        "end_iso": "2026-07-03T19:30:00+02:00",
+        "all_day": false,
+        "location": "Studio Zuid"
+      },
+      {
         "title": "Team standup",
-        "start_iso": "2026-07-04T09:30:00+05:30",
-        "end_iso": "2026-07-04T09:45:00+05:30",
+        "start_iso": "2026-07-04T09:30:00+02:00",
+        "end_iso": "2026-07-04T09:45:00+02:00",
+        "all_day": false,
+        "location": null
+      },
+      {
+        "title": "Book club",
+        "start_iso": "2026-07-04T14:00:00+02:00",
+        "end_iso": "2026-07-04T16:00:00+02:00",
         "all_day": false,
         "location": null
       },
@@ -71,6 +115,55 @@
         "end_iso": "2026-07-06",
         "all_day": true,
         "location": null
+      }
+    ],
+    "calendars": [
+      {
+        "slot": "dinesh",
+        "status": "ok",
+        "events": [
+          {
+            "title": "Dentist",
+            "start_iso": "2026-07-03T15:00:00+02:00",
+            "end_iso": "2026-07-03T16:00:00+02:00",
+            "all_day": false,
+            "location": "Smile Clinic"
+          },
+          {
+            "title": "Team standup",
+            "start_iso": "2026-07-04T09:30:00+02:00",
+            "end_iso": "2026-07-04T09:45:00+02:00",
+            "all_day": false,
+            "location": null
+          },
+          {
+            "title": "Airport run",
+            "start_iso": "2026-07-05",
+            "end_iso": "2026-07-06",
+            "all_day": true,
+            "location": null
+          }
+        ]
+      },
+      {
+        "slot": "keethu",
+        "status": "ok",
+        "events": [
+          {
+            "title": "Yoga class",
+            "start_iso": "2026-07-03T18:30:00+02:00",
+            "end_iso": "2026-07-03T19:30:00+02:00",
+            "all_day": false,
+            "location": "Studio Zuid"
+          },
+          {
+            "title": "Book club",
+            "start_iso": "2026-07-04T14:00:00+02:00",
+            "end_iso": "2026-07-04T16:00:00+02:00",
+            "all_day": false,
+            "location": null
+          }
+        ]
       }
     ]
   }

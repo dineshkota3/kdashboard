@@ -8,7 +8,8 @@ const schemaMigrations = [
   "migrations/20260627000100_create-health-targets.sql",
   "migrations/20260629083000_create-challenge-daily-logs.sql",
   "migrations/20260707000000_enable_rls_private_tables.sql",
-  "migrations/20260710000000_create-google-calendar-state.sql"
+  "migrations/20260710000000_create-google-calendar-state.sql",
+  "migrations/20261011000000_google-calendar-multicalendar.sql"
 ];
 
 const sampleDataMigrations = [];

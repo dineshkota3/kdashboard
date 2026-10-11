@@ -82,6 +82,16 @@ struct CalendarEvent {
 };
 
 const int kMaxCalendarEvents = 10;
+const int kMaxCalendarFeeds = 3;
+
+// One connected Google account (Phase 3.1). slot "" marks the legacy
+// single-calendar payload so it renders exactly as before.
+struct CalendarFeed {
+  char slot[24];
+  int connected;
+  int event_count;
+  CalendarEvent events[kMaxCalendarEvents];
+};
 
 struct Dashboard {
   char generated_at[40];
@@ -102,8 +112,8 @@ struct Dashboard {
   char calories_unit[16];
   List lists[kMaxLists];
   int list_count;
-  CalendarEvent calendar_events[kMaxCalendarEvents];
-  int calendar_count;
+  CalendarFeed calendar_feeds[kMaxCalendarFeeds];
+  int calendar_feed_count;
   int calendar_connected;
 };
 
@@ -355,6 +365,74 @@ int parseItems(const char* list_start, const char* list_end, List* list) {
   return 1;
 }
 
+int parseCalendarEvents(const char* events_value, const char* events_end, CalendarFeed* feed) {
+  if (!events_value || *events_value != '[') return 0;
+  const char* events_end_real = matchingClose(events_value, ']');
+  if (!events_end_real || (events_end && events_end_real > events_end)) return 0;
+
+  const char* events_cursor = events_value + 1;
+  while (events_cursor < events_end_real && feed->event_count < kMaxCalendarEvents) {
+    const char* event_start = strchr(events_cursor, '{');
+    if (!event_start || event_start >= events_end_real) break;
+    const char* event_end = matchingClose(event_start, '}');
+    if (!event_end || event_end > events_end_real) break;
+    CalendarEvent* event = &feed->events[feed->event_count];
+    extractString(event_start, event_end, "title", event->title, sizeof(event->title), "");
+    extractString(event_start, event_end, "start_iso", event->start_iso, sizeof(event->start_iso), "");
+    event->all_day = extractBool(event_start, event_end, "all_day", 0);
+    if (event->title[0] && event->start_iso[0]) feed->event_count++;
+    events_cursor = event_end + 1;
+  }
+  return 1;
+}
+
+// Phase 3.1: per-person feeds under calendar.calendars[]. The backend keeps the
+// merged top-level "events" for legacy binaries, so this parser skips that path
+// whenever feeds parsed; a payload without feeds falls back to the legacy block.
+void parseCalendarFeeds(const char* calendar_value, const char* calendar_end, Dashboard* dashboard) {
+  char status[24];
+  extractString(calendar_value, calendar_end, "status", status, sizeof(status), "");
+  dashboard->calendar_connected = strcmp(status, "ok") == 0;
+
+  const char* calendars_value = findKeyInRange(calendar_value, calendar_end, "calendars");
+  if (calendars_value && *calendars_value == '[') {
+    const char* calendars_end = matchingClose(calendars_value, ']');
+    if (calendars_end && calendars_end <= calendar_end) {
+      const char* cursor = calendars_value + 1;
+      while (cursor < calendars_end && dashboard->calendar_feed_count < kMaxCalendarFeeds) {
+        const char* object_start = strchr(cursor, '{');
+        if (!object_start || object_start >= calendars_end) break;
+        const char* object_end = matchingClose(object_start, '}');
+        if (!object_end || object_end > calendars_end) break;
+
+        CalendarFeed* feed = &dashboard->calendar_feeds[dashboard->calendar_feed_count];
+        extractString(object_start, object_end, "slot", feed->slot, sizeof(feed->slot), "");
+        char feed_status[24];
+        extractString(object_start, object_end, "status", feed_status, sizeof(feed_status), "");
+        feed->connected = strcmp(feed_status, "ok") == 0;
+        parseCalendarEvents(findKeyInRange(object_start, object_end, "events"), object_end, feed);
+        dashboard->calendar_feed_count++;
+        cursor = object_end + 1;
+      }
+    }
+  }
+
+  if (dashboard->calendar_feed_count == 0) {
+    // Legacy payload: synthesize one anonymous feed from the flat events array.
+    CalendarFeed* feed = &dashboard->calendar_feeds[0];
+    feed->slot[0] = '\0';
+    feed->connected = dashboard->calendar_connected;
+    parseCalendarEvents(findKeyInRange(calendar_value, calendar_end, "events"), calendar_end, feed);
+    dashboard->calendar_feed_count = 1;
+    return;
+  }
+
+  dashboard->calendar_connected = 0;
+  for (int i = 0; i < dashboard->calendar_feed_count; i++) {
+    if (dashboard->calendar_feeds[i].connected) dashboard->calendar_connected = 1;
+  }
+}
+
 int parseDashboard(const char* json, Dashboard* dashboard) {
   memset(dashboard, 0, sizeof(*dashboard));
   copyText(dashboard->steps_unit, sizeof(dashboard->steps_unit), "steps");
@@ -404,29 +482,7 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
   if (calendar_value && *calendar_value == '{') {
     const char* calendar_end = matchingClose(calendar_value, '}');
     if (calendar_end) {
-      char status[24];
-      extractString(calendar_value, calendar_end, "status", status, sizeof(status), "");
-      dashboard->calendar_connected = strcmp(status, "ok") == 0;
-
-      const char* events_value = findKeyInRange(calendar_value, calendar_end, "events");
-      if (events_value && *events_value == '[') {
-        const char* events_end = matchingClose(events_value, ']');
-        if (events_end) {
-          const char* events_cursor = events_value + 1;
-          while (events_cursor < events_end && dashboard->calendar_count < kMaxCalendarEvents) {
-            const char* event_start = strchr(events_cursor, '{');
-            if (!event_start || event_start >= events_end) break;
-            const char* event_end = matchingClose(event_start, '}');
-            if (!event_end || event_end > events_end) break;
-            CalendarEvent* event = &dashboard->calendar_events[dashboard->calendar_count];
-            extractString(event_start, event_end, "title", event->title, sizeof(event->title), "");
-            extractString(event_start, event_end, "start_iso", event->start_iso, sizeof(event->start_iso), "");
-            event->all_day = extractBool(event_start, event_end, "all_day", 0);
-            if (event->title[0] && event->start_iso[0]) dashboard->calendar_count++;
-            events_cursor = event_end + 1;
-          }
-        }
-      }
+      parseCalendarFeeds(calendar_value, calendar_end, dashboard);
     }
   }
   return 1;
@@ -1114,30 +1170,41 @@ void formatCalendarEventRow(const CalendarEvent* event, char* out, size_t size) 
   snprintf(out, size, "%s %s %d %s - %.60s", days[weekday], months[month - 1], day, time_part, title_upper);
 }
 
-void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const Dashboard* dashboard) {
+// Uppercased slot for the strip header; "" (legacy payload) keeps "CALENDAR".
+void feedLabel(const CalendarFeed* feed, char* out, size_t size) {
+  if (!feed || !feed->slot[0]) {
+    copyText(out, size, "CALENDAR");
+    return;
+  }
+  upperCopy(out, size, feed->slot);
+}
+
+void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const CalendarFeed* feed) {
   strokeRect(canvas, x, y, w, h, 3, 0);
   Rect card_rect = {x, y, w, h};
   addTouchRegion(card_rect, kTouchOpenCalendar, -1, -1, "", 0);
-  drawTextClipped(canvas, x + 18, y + 10, 300, "CALENDAR", 4, 0);
+  char label[32];
+  feedLabel(feed, label, sizeof(label));
+  drawTextClipped(canvas, x + 18, y + 10, 300, label, 4, 0);
   line(canvas, x + 10, y + 46, x + w - 10, y + 46, 2, 0);
 
   int row_capacity = (h - 60) / 34;
   if (row_capacity < 1) row_capacity = 1;
   if (row_capacity > kMaxCalendarEvents) row_capacity = kMaxCalendarEvents;
 
-  if (!dashboard->calendar_connected) {
+  if (!feed || !feed->connected) {
     drawTextClipped(canvas, x + 18, y + 56, w - 36, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
     return;
   }
-  if (dashboard->calendar_count == 0) {
+  if (feed->event_count == 0) {
     drawTextClipped(canvas, x + 18, y + 56, w - 36, "NO UPCOMING EVENTS", 3, 0);
     return;
   }
 
-  const int shown = dashboard->calendar_count < row_capacity ? dashboard->calendar_count : row_capacity;
+  const int shown = feed->event_count < row_capacity ? feed->event_count : row_capacity;
   for (int i = 0; i < shown; i++) {
     char row[160];
-    formatCalendarEventRow(&dashboard->calendar_events[i], row, sizeof(row));
+    formatCalendarEventRow(&feed->events[i], row, sizeof(row));
     drawTextClipped(canvas, x + 18, y + 54 + i * 34, w - 36, row, 3, 0);
   }
 }
@@ -1367,35 +1434,92 @@ void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const
   drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
 
   const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "CALENDAR");
-
-  if (!dashboard->calendar_connected) {
-    drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
-    return;
+  char sub_title[40];
+  if (dashboard->calendar_feed_count == 1 && dashboard->calendar_feeds[0].slot[0]) {
+    upperCopy(sub_title, sizeof(sub_title), dashboard->calendar_feeds[0].slot);
+  } else {
+    copyText(sub_title, sizeof(sub_title), "CALENDAR");
   }
-  if (dashboard->calendar_count == 0) {
-    drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NO UPCOMING EVENTS", 3, 0);
-    return;
-  }
+  drawSubHeader(canvas, shell_x, sub_y, shell_w, sub_title);
 
   const int row_x = shell_x + 18;
   const int row_w = shell_w - 36;
   const int row_h = 64;
   const int row_gap = 10;
   const int first_y = sub_y + 96;
-  const int max_rows = (shell_y + shell_h - first_y - 24) / (row_h + row_gap);
-  const int shown = dashboard->calendar_count < max_rows ? dashboard->calendar_count : max_rows;
-  for (int i = 0; i < shown; i++) {
-    const int row_y = first_y + i * (row_h + row_gap);
-    strokeRect(canvas, row_x, row_y, row_w, row_h, 2, 0);
-    char row[160];
-    formatCalendarEventRow(&dashboard->calendar_events[i], row, sizeof(row));
-    drawTextClipped(canvas, row_x + 18, row_y + 18, row_w - 36, row, 3, 0);
+  const int bottom = shell_y + shell_h - 24;
+
+  if (dashboard->calendar_feed_count <= 1) {
+    // Legacy/single-calendar payloads render exactly as before.
+    const CalendarFeed* feed = dashboard->calendar_feed_count == 1 ? &dashboard->calendar_feeds[0] : NULL;
+    if (!feed || !feed->connected) {
+      drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
+      return;
+    }
+    if (feed->event_count == 0) {
+      drawTextClipped(canvas, shell_x + 28, sub_y + 110, shell_w - 56, "NO UPCOMING EVENTS", 3, 0);
+      return;
+    }
+    const int max_rows = (bottom - first_y) / (row_h + row_gap);
+    const int shown = feed->event_count < max_rows ? feed->event_count : max_rows;
+    for (int i = 0; i < shown; i++) {
+      const int row_y = first_y + i * (row_h + row_gap);
+      strokeRect(canvas, row_x, row_y, row_w, row_h, 2, 0);
+      char row[160];
+      formatCalendarEventRow(&feed->events[i], row, sizeof(row));
+      drawTextClipped(canvas, row_x + 18, row_y + 18, row_w - 36, row, 3, 0);
+    }
+    if (feed->event_count > shown) {
+      char more[48];
+      snprintf(more, sizeof(more), "+%d MORE", feed->event_count - shown);
+      drawTextClipped(canvas, row_x + 18, shell_y + shell_h - 60, 180, more, 3, 0);
+    }
+    return;
   }
-  if (dashboard->calendar_count > shown) {
-    char more[48];
-    snprintf(more, sizeof(more), "+%d MORE", dashboard->calendar_count - shown);
-    drawTextClipped(canvas, row_x + 18, shell_y + shell_h - 60, 180, more, 3, 0);
+
+  // Phase 3.1: one section per person.
+  int section_y = first_y;
+  for (int f = 0; f < dashboard->calendar_feed_count && section_y + 110 < bottom; f++) {
+    const CalendarFeed* feed = &dashboard->calendar_feeds[f];
+    char label[32];
+    feedLabel(feed, label, sizeof(label));
+    char header[48];
+    snprintf(header, sizeof(header), "%s [%d]", label, feed->event_count);
+    drawTextClipped(canvas, row_x, section_y, row_w, header, 3, 0);
+    line(canvas, row_x, section_y + 34, row_x + row_w, section_y + 34, 2, 0);
+    section_y += 46;
+
+    if (!feed->connected) {
+      drawTextClipped(canvas, row_x + 18, section_y + 6, row_w - 36, "NOT CONNECTED - VISIT OAUTH LINK", 3, 0);
+      section_y += 56;
+      continue;
+    }
+    if (feed->event_count == 0) {
+      drawTextClipped(canvas, row_x + 18, section_y + 6, row_w - 36, "NO UPCOMING EVENTS", 3, 0);
+      section_y += 56;
+      continue;
+    }
+
+    const int max_rows = 5;
+    const int capped = feed->event_count < max_rows ? feed->event_count : max_rows;
+    const int space_rows = (bottom - section_y) / (row_h + row_gap);
+    const int shown = capped < space_rows ? capped : (space_rows < 1 ? 0 : space_rows);
+    for (int i = 0; i < shown; i++) {
+      const int row_y = section_y + i * (row_h + row_gap);
+      strokeRect(canvas, row_x, row_y, row_w, row_h, 2, 0);
+      char row[160];
+      formatCalendarEventRow(&feed->events[i], row, sizeof(row));
+      drawTextClipped(canvas, row_x + 18, row_y + 18, row_w - 36, row, 3, 0);
+    }
+    section_y += shown * (row_h + row_gap);
+    if (feed->event_count > shown) {
+      char more[48];
+      snprintf(more, sizeof(more), "+%d MORE", feed->event_count - shown);
+      drawTextClipped(canvas, row_x + 18, section_y + 6, 180, more, 3, 0);
+      section_y += 40;
+    } else {
+      section_y += 24;
+    }
   }
 }
 
@@ -1500,10 +1624,22 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   drawRadialMetric(canvas, shell_x + 10 + (stat_w + gap) * 2, stat_y, stat_w, stat_h, "CALORIES", dashboard->calories, dashboard->calories_target, dashboard->calories_unit);
 
   const int footer_h = 44;
-  const int cal_y = stat_y + stat_h + gap;
-  const int cal_h = shell_h < 900 ? 130 : 200;
-  drawCalendarCard(canvas, shell_x + 10, cal_y, shell_w - 20, cal_h, dashboard);
-  const int lists_y = cal_y + cal_h + gap;
+  const int cal_top = stat_y + stat_h + gap;
+  int cal_bottom = cal_top;
+  if (dashboard->calendar_feed_count >= 2) {
+    // Phase 3.1: one labeled strip per person (3 event rows each).
+    const int strip_h = shell_h < 900 ? 116 : 168;
+    drawCalendarCard(canvas, shell_x + 10, cal_top, shell_w - 20, strip_h, &dashboard->calendar_feeds[0]);
+    drawCalendarCard(canvas, shell_x + 10, cal_top + strip_h + gap, shell_w - 20, strip_h, &dashboard->calendar_feeds[1]);
+    cal_bottom = cal_top + strip_h * 2 + gap;
+  } else {
+    // Single-calendar payloads (and forks) keep today's layout.
+    const int cal_h = shell_h < 900 ? 130 : 200;
+    drawCalendarCard(canvas, shell_x + 10, cal_top, shell_w - 20, cal_h,
+                     dashboard->calendar_feed_count > 0 ? &dashboard->calendar_feeds[0] : NULL);
+    cal_bottom = cal_top + cal_h;
+  }
+  const int lists_y = cal_bottom + gap;
   const int lists_h = shell_y + shell_h - lists_y - footer_h - gap - 10;
   const int list_w = (shell_w - 20 - gap) / 2;
   if (dashboard->list_count > 0) {

@@ -95,7 +95,7 @@ check("native binary builds cleanly", () => {
 });
 
 const tmp = mkdtempSync(join(tmpdir(), "kdash-test-"));
-for (const view of [null, "challenge", "chores", "workout", "grocery"]) {
+for (const view of [null, "challenge", "chores", "workout", "grocery", "calendar"]) {
   check(`render view=${view ?? "home"} at PW5 resolution`, () => {
     const out = join(tmp, `view-${view ?? "home"}.pgm`);
     const args = ["--render", join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "--dump-pgm", out, "--dump-size", "1236x1648"];
@@ -119,6 +119,79 @@ check("render tolerates fixture without workout/grocery lists", () => {
   const out = join(tmp, "minimal.pgm");
   const result = spawnSync(BIN, ["--render", path, "--dump-pgm", out], { stdio: "pipe" });
   assert.equal(result.status, 0, `exit ${result.status}: ${result.stderr}`);
+});
+
+// ---- phase 3.1: multi-calendar renderer ----
+
+function writeTempJson(name, value) {
+  const path = join(tmp, name);
+  execFileSync("node", ["-e", `require('fs').writeFileSync(${JSON.stringify(path)}, ${JSON.stringify(JSON.stringify(value))})`]);
+  return path;
+}
+
+function renderToPgm(fixturePath, view) {
+  const out = join(tmp, `out-${Math.random().toString(36).slice(2)}.pgm`);
+  const args = ["--render", fixturePath, "--dump-pgm", out, "--dump-size", "1236x1648"];
+  if (view) args.push("--view", view);
+  const result = spawnSync(BIN, args, { stdio: "pipe" });
+  assert.equal(result.status, 0, `exit ${result.status}: ${result.stderr}`);
+  return readFileSync(out);
+}
+
+function darkPixelCount(bytes) {
+  let dark = 0;
+  for (let i = 4096; i < bytes.length; i += 997) if (bytes[i] < 128) dark += 1;
+  return dark;
+}
+
+check("phase 3.1: home renders TWO strips when calendars[] has 2 feeds", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const bytes = renderToPgm(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), null);
+  const twoFeed = darkPixelCount(bytes);
+
+  const single = { ...fixture, calendar: { status: "ok", events: fixture.calendar.events } };
+  const singlePath = writeTempJson("single-feed.json", single);
+  const oneFeed = darkPixelCount(renderToPgm(singlePath, null));
+
+  assert.ok(twoFeed > oneFeed, `two-strip render should ink more pixels (two=${twoFeed}, one=${oneFeed})`);
+});
+
+check("phase 3.1: parser tolerates calendars[] without top-level events", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const feedsOnly = { ...fixture, calendar: { status: "ok", calendars: fixture.calendar.calendars } };
+  const path = writeTempJson("feeds-only.json", feedsOnly);
+  for (const view of [null, "calendar"]) {
+    const bytes = renderToPgm(path, view);
+    assert.ok(darkPixelCount(bytes) > 20, `view=${view ?? "home"} render blank`);
+  }
+});
+
+check("phase 3.1: legacy payload without calendars[] still renders one strip", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const legacy = { ...fixture, calendar: { status: "ok", events: fixture.calendar.events } };
+  const path = writeTempJson("legacy-calendar.json", legacy);
+  for (const view of [null, "calendar"]) {
+    const bytes = renderToPgm(path, view);
+    assert.ok(darkPixelCount(bytes) > 20, `view=${view ?? "home"} render blank`);
+  }
+});
+
+check("phase 3.1: not_connected aggregate with one dead feed still renders both strips", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const degraded = {
+    ...fixture,
+    calendar: {
+      status: "ok",
+      events: fixture.calendar.events,
+      calendars: [
+        fixture.calendar.calendars[0],
+        { slot: "keethu", status: "unavailable", events: [] }
+      ]
+    }
+  };
+  const path = writeTempJson("degraded-feed.json", degraded);
+  const bytes = renderToPgm(path, null);
+  assert.ok(darkPixelCount(bytes) > 20, "home render blank");
 });
 
 rmSync(tmp, { recursive: true, force: true });

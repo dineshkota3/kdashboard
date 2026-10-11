@@ -7,6 +7,8 @@ import {
   validateTelegramAction,
   validateEventAction,
   parseEventHeuristically,
+  applySlotHint,
+  isValidSlotName,
   PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
@@ -320,6 +322,11 @@ test("PLANNER_SYSTEM_PROMPT covers planner lists, no meal/recipe schema", () => 
   assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /meal|recipe/i);
 });
 
+test("PLANNER_SYSTEM_PROMPT mentions calendar_slot routing (phase 3.1)", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /calendar_slot/);
+  assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /meal|recipe/i);
+});
+
 test("webhook source uses Z.ai endpoint and env names, not OpenAI", () => {
   const source = readFileSync(new URL("./telegram-webhook.ts", import.meta.url), "utf8");
   assert.match(source, /https:\/\/api\.z\.ai\/api\/coding\/paas\/v4\/chat\/completions/);
@@ -328,4 +335,122 @@ test("webhook source uses Z.ai endpoint and env names, not OpenAI", () => {
   assert.doesNotMatch(source, /api\.openai\.com/);
   assert.doesNotMatch(source, /OPENAI_API_KEY/);
   assert.doesNotMatch(source, /OPENAI_MODEL/);
+});
+
+// ---- phase 3.1: multi-calendar routing ----
+
+const NOW = new Date("2026-10-12T04:30:00Z");
+const SLOTS = ["dinesh", "keethu"];
+
+test("isValidSlotName accepts slugs and rejects junk", () => {
+  assert.equal(isValidSlotName("keethu"), true);
+  assert.equal(isValidSlotName("owner"), true);
+  assert.equal(isValidSlotName("am"), true);
+  assert.equal(isValidSlotName("Keethu!"), false);
+  assert.equal(isValidSlotName("3rd-person"), false);
+  assert.equal(isValidSlotName(""), false);
+});
+
+test("applySlotHint: 'for keethu:' routes and strips the name from the message", () => {
+  const hint = applySlotHint("schedule for keethu: dentist friday 3pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+  const event = parseEventHeuristically(hint.message, NOW, "Europe/Amsterdam");
+  assert.ok(event);
+  assert.equal(event.title, "dentist", "stripped message must not leak the name into the title");
+  assert.equal(event.start_iso, "2026-10-16T13:00:00.000Z");
+});
+
+test("applySlotHint: 'for friday' is NOT mistaken for a calendar", () => {
+  const hint = applySlotHint("schedule dentist for friday 3pm", SLOTS);
+  assert.equal(hint.slot, null);
+  assert.equal(hint.message, "schedule dentist for friday 3pm", "message untouched");
+});
+
+test("applySlotHint: '<name>: schedule ...' prefix label form", () => {
+  // The prefix label only routes when the rest is a booking (trigger word
+  // required) — "keethu: dentist friday 3pm" alone is not a booking.
+  const hint = applySlotHint("keethu: schedule dentist friday 3pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+  const event = parseEventHeuristically(hint.message, NOW, "Europe/Amsterdam");
+  assert.ok(event);
+  assert.equal(event.title, "dentist");
+});
+
+test("applySlotHint: \"for <name>'s calendar\" form", () => {
+  const hint = applySlotHint("schedule dentist in keethu's calendar friday 3pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+  const event = parseEventHeuristically(hint.message, NOW, "Europe/Amsterdam");
+  assert.ok(event);
+  assert.equal(event.title, "dentist");
+});
+
+test("applySlotHint: trailing 'for keethu' in a booking routes and strips", () => {
+  const hint = applySlotHint("book dentist appointment for keethu friday 3pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+  const event = parseEventHeuristically(hint.message, NOW, "Europe/Amsterdam");
+  assert.ok(event);
+  // heuristic keeps non-trigger words: "appointment" survives (pre-existing behavior)
+  assert.equal(event.title, "dentist appointment");
+  assert.ok(!/keethu/i.test(event.title), "name must not leak into the title");
+});
+
+test("applySlotHint: owner-style message stays slot-less", () => {
+  const hint = applySlotHint("schedule dentist friday 3pm", SLOTS);
+  assert.equal(hint.slot, null);
+  assert.equal(hint.message, "schedule dentist friday 3pm");
+});
+
+test("applySlotHint: unknown person never routes (nor strips)", () => {
+  const hint = applySlotHint("schedule for craig: dentist friday 3pm", SLOTS);
+  assert.equal(hint.slot, null);
+  assert.equal(hint.message, "schedule for craig: dentist friday 3pm");
+});
+
+test("applySlotHint: no slots connected -> passthrough", () => {
+  const hint = applySlotHint("schedule for keethu: dentist friday 3pm", []);
+  assert.equal(hint.slot, null);
+  assert.equal(hint.message, "schedule for keethu: dentist friday 3pm");
+});
+
+test("applySlotHint: non-booking messages are never touched", () => {
+  const message = "add milk for keethu to groceries";
+  const hint = applySlotHint(message, SLOTS);
+  assert.equal(hint.slot, null);
+  assert.equal(hint.message, message);
+});
+
+test("applySlotHint: case-insensitive name, lowercased slot", () => {
+  const hint = applySlotHint("schedule for Keethu: dentist friday 3pm", SLOTS);
+  assert.equal(hint.slot, "keethu");
+});
+
+test("validateEventAction preserves a valid calendar_slot", () => {
+  const a = validateEventAction({
+    kind: "calendar", action: "create_event", title: "Dentist",
+    start_iso: "2026-10-16T09:30:00Z", calendar_slot: "Keethu"
+  });
+  assert.ok(a);
+  assert.equal(a.calendar_slot, "keethu", "slot normalized to lowercase");
+});
+
+test("validateEventAction rejects a malformed calendar_slot", () => {
+  assert.equal(validateEventAction({
+    kind: "calendar", action: "create_event", title: "Dentist",
+    start_iso: "2026-10-16T09:30:00Z", calendar_slot: "Keethu!"
+  }), null);
+});
+
+test("validateEventAction omits calendar_slot when absent", () => {
+  const a = validateEventAction({
+    kind: "calendar", action: "create_event", title: "Dentist",
+    start_iso: "2026-10-16T09:30:00Z"
+  });
+  assert.ok(a);
+  assert.equal("calendar_slot" in a, false);
+});
+
+test("parseEventHeuristically stays owner-routed (no calendar_slot field)", () => {
+  const a = parseEventHeuristically("schedule dentist friday 3pm", NOW, "Asia/Kolkata");
+  assert.ok(a);
+  assert.equal("calendar_slot" in a, false);
 });
