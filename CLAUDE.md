@@ -3,6 +3,21 @@
 Kindle Dashboard — e-ink family dashboard (Kindle PW5 + InsForge backend + Telegram bot).
 Backend/API conventions live in [AGENTS.md](AGENTS.md). Per-phase history lives in [docs/phases/](docs/phases/).
 
+## Privacy & secrets — nothing personal in git (hard rule)
+
+No secrets, keys, tokens, IDs, usernames, emails, phone numbers, or ANY personally
+identifiable information (PII) may ever be committed to git — not in code, docs,
+phase logs, fixtures, test data, scripts, or commit messages. This repo is public.
+
+- Credentials live ONLY in InsForge secrets (CLI) or a local git-ignored `.env`.
+- When writing docs or results logs, use placeholders: `<owner chat id>`,
+  `your-project.insforge.app`, `a-long-random-token`. Name secrets, never quote values.
+- This is enforced practice, not theory: personal email, LAN IP, and the owner's
+  chat id were all scrubbed from phase logs (commits `3b4d123`, `ce0bd1a`).
+- Before committing anything generated (logs, JSON dumps, command output), scan it
+  for PII first. If PII lands in a commit, scrub it in a follow-up commit; rewrite
+  history only if the owner asks.
+
 ## InsForge free-tier guardrails (read before ANY backend change)
 
 The backend runs on the InsForge **free plan**. Limits reset monthly (cycle: 8th → 7th).
