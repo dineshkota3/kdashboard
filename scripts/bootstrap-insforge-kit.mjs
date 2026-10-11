@@ -9,7 +9,8 @@ const schemaMigrations = [
   "migrations/20260629083000_create-challenge-daily-logs.sql",
   "migrations/20260707000000_enable_rls_private_tables.sql",
   "migrations/20260710000000_create-google-calendar-state.sql",
-  "migrations/20261011000000_google-calendar-multicalendar.sql"
+  "migrations/20261011000000_google-calendar-multicalendar.sql",
+  "migrations/20261011010000_create-calendar-reminders.sql"
 ];
 
 const sampleDataMigrations = [];
@@ -21,7 +22,8 @@ const functions = [
   ["telegram-webhook", "functions/telegram-webhook.ts", "Telegram Planner Webhook"],
   ["health-sync", "functions/health-sync.ts", "Health Sync"],
   ["planner-cleanup", "functions/planner-cleanup.ts", "Planner Cleanup"],
-  ["google-calendar-oauth", "functions/google-calendar-oauth.ts", "Google Calendar OAuth"]
+  ["google-calendar-oauth", "functions/google-calendar-oauth.ts", "Google Calendar OAuth"],
+  ["calendar-reminders", "functions/calendar-reminders.ts", "Calendar Reminders"]
 ];
 
 const flags = new Set(process.argv.slice(2));

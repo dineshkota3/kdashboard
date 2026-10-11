@@ -25,6 +25,7 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | New: `migrations/..._google-calendar-multicalendar.sql` | `google_calendar_state` → multi-slot: `slot` unique key + `created_at`, drops `id`; one row per connected Google account | 3.1 |
 | New: `functions/google-calendar-oauth.ts` | Auth-URL + code-exchange callback; `?slot=` routed via OAuth `state`, upsert `onConflict:"slot"` | 3, 3.1 |
 | New: `scripts/connect-calendar.mjs` | `npm run google:connect -- --slot <name>` — consent link for an ADDITIONAL user; reuses the existing OAuth client | 3.1 |
+| New: `functions/calendar-reminders.ts` + `calendar_reminders_sent` table + 15-min schedule | Telegram pings per event at T-12h and T-1h (all-day events: T-12h only); ledger-deduped | 3.1 |
 | New: `migrations/..._create-appliance-status.sql` | Appliance snapshot + alert bookkeeping | 5 |
 | New: `functions/smartthings-poll.ts` | Scheduled PAT poller + transition alert | 5 |
 | New: `functions/planner-cleanup.ts` + nightly schedule | Deletes done planner items after 72h (PLANNER_CLEANUP_AFTER_HOURS); done items also sort to the bottom of each list and stay visible 72h (upstream hid them after 24h) | 2+ |
@@ -60,6 +61,17 @@ npx @insforge/cli schedules create --name planner-nightly-cleanup --cron "30 21 
 ```
 Note: the InsForge SDK's chained `.order()` calls overwrite each other — done-last ordering is a JS `.sort()` in `kindle-dashboard-data.ts`, not an ORDER BY.
 
+### Calendar reminders cron — Phase 3.1
+Every 15 min the schedule POSTs `functions/calendar-reminders`; the bot announces each event at T-12h and T-1h (all-day events: T-12h only) to the allowed chat, deduped via the `calendar_reminders_sent` ledger. Each tick costs exactly ONE InsForge function call (~2.9K/mo — see docs/resources/insforge-limits.md). Recreate with:
+```sh
+npx @insforge/cli secrets add CALENDAR_REMINDER_TOKEN <long-random-token>
+npx @insforge/cli functions deploy calendar-reminders --file functions/calendar-reminders.ts --name "Calendar Reminders"
+npx @insforge/cli schedules create --name calendar-reminders --cron "*/15 * * * *" \
+  --method POST --url https://<project>.insforge.app/functions/calendar-reminders \
+  --headers '{"X-Calendar-Reminder-Token": "${{secrets.CALENDAR_REMINDER_TOKEN}}"}'
+```
+Reminder precision is ±15 min (cron cadence). Windows are half-open `[T, T+15m)`: t1 = 60–75 min before, t12 = 720–735 min before.
+
 ### SmartThings PAT renewal — Phase 5
 1. account.smartthings.com → generate new PAT (`devices:read`), note expiry.
 2. `npx @insforge/cli secrets update SMARTTHINGS_PAT <new-pat>` (check CLI verbs).
@@ -94,6 +106,7 @@ After an Amazon firmware update: re-jailbreak per kindlemodding wiki if needed, 
 | `ZAI_API_KEY`, `ZAI_MODEL` | 2 | NLP parsing |
 | `DASHBOARD_TIMEZONE` | 3 (owner: `Europe/Amsterdam`) | Booking normalization, challenge day boundary, event-list formatting. Defaults to Asia/Kolkata if unset. Redeploy functions that read it after changing. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 3 | OAuth exchange (refresh token lives in `google_calendar_state` table) |
+| `CALENDAR_REMINDER_TOKEN` | 3.1 (generated) | 15-min reminders schedule auth |
 | `SMARTTHINGS_PAT`, `SMARTTHINGS_DEVICE_ID`, `SMARTTHINGS_POLL_TOKEN` | 5 | Appliance polling |
 | `PLANNER_CLEANUP_TOKEN` | 2+ (generated) | Nightly planner-cleanup schedule auth |
 
