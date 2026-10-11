@@ -1,7 +1,7 @@
 # Phase 3.1 — Second Google Calendar (Keethu) on the Same Deployment
 
-> Status: 🚧 In progress (2026-10-11 — plan approved, implementation starting)
-> Gate: Phase 3.1 is done only when Keethu's calendar renders as its own strip on the Kindle AND a Telegram booking with `for keethu` lands in her Google Calendar, with the owner (Dinesh) calendar untouched throughout.
+> Status: ✅ Complete (2026-10-11 CEST — both strips live on the Kindle with per-strip touch views; Telegram routing verified end-to-end incl. fuzzy + clarify; reminders cron live; owner confirmed tap test)
+> Gate: PASSED — Keethu's calendar renders as its own strip AND `for keethu` bookings land in her Google Calendar, with the owner (Dinesh) calendar untouched throughout.
 
 ## Goal
 
@@ -193,4 +193,4 @@ One-command connect for an ADDITIONAL user. No gcloud, never touches secrets:
   - **`calendar-reminders` cron (owner-requested):** 15-min schedule → bot announces each event at T-12h and T-1h (all-day: T-12h only, owner-approved) to the allowed chat. Ledger `calendar_reminders_sent` (PK event_id+slot+kind) dedupes; windows `[60,75)` / `[720,735)` min, half-open. Auth via `CALENDAR_REMINDER_TOKEN` header. Live E2E: test event 66 min out → invoke 1 sent `keethu:t1`, invoke 2 sent nothing (ledger); test event + ledger row deleted after.
   - Budget: cron adds ~2,880 fn calls/mo (2.9%) — projected cycle total ~14K calls ≈ 14% of limit. Usage-check protocol now in CLAUDE.md + docs/resources/insforge-limits.md.
   - Tests: 74 unit (+7 pickReminders: windows, boundaries `[inclusive,exclusive)`, all-day t12-only, malformed starts) + integration green.
-- **PENDING (owner):** tap both strips on the Kindle — DINESH opens only Dinesh's events, KEETHU only Keethu's, BACK returns. Try Telegram phrasings freely; ambiguous ones now ask back.
+- **2026-10-11 — Gate CLOSED (owner verified):** tap test on device passed — DINESH strip opens only Dinesh's full-screen calendar, KEETHU only Keethu's, BACK returns. Telegram routing confirmed from the owner's own messages (the original misroute phrasing now books to Keethu). Free-tier usage guardrails shipped (CLAUDE.md + docs/resources/insforge-limits.md); reminders cron running at 15-min cadence (~2.9% of monthly function budget).
