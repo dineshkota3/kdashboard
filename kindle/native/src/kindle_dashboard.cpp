@@ -66,6 +66,7 @@ enum TouchAction {
 struct Item {
   char id[48];
   char text[96];
+  char store[12];
   int done;
 };
 
@@ -359,6 +360,7 @@ int parseItems(const char* list_start, const char* list_end, List* list) {
     Item* item = &list->items[list->item_count];
     extractString(object_start, object_end, "id", item->id, sizeof(item->id), "");
     extractString(object_start, object_end, "text", item->text, sizeof(item->text), "");
+    extractString(object_start, object_end, "store", item->store, sizeof(item->store), "");
     item->done = extractBool(object_start, object_end, "done", 0);
     if (item->text[0]) list->item_count++;
     cursor = object_end + 1;
@@ -1211,6 +1213,37 @@ void drawCalendarCard(Canvas* canvas, int x, int y, int w, int h, const Calendar
   }
 }
 
+// ---- phase 3.1: grocery shop sublists ----
+
+// Shop display order; "" (unmapped store) sorts last.
+int groceryStoreRank(const char* store) {
+  if (strcmp(store, "ah") == 0) return 0;
+  if (strcmp(store, "turkish") == 0) return 1;
+  if (strcmp(store, "indian") == 0) return 2;
+  return 3;
+}
+
+const char* groceryStoreLabel(const char* store) {
+  if (strcmp(store, "ah") == 0) return "ALBERT HEIJN";
+  if (strcmp(store, "turkish") == 0) return "TURKISH MKT";
+  if (strcmp(store, "indian") == 0) return "INDIAN STORE";
+  return "OTHER";
+}
+
+// Item index for grouped display position n (shops in rank order, payload order
+// within a shop — done items already sink), or -1 past the end.
+int groceryOrderedItemIndex(const List* list, int n) {
+  int seen = 0;
+  for (int rank = 0; rank <= 3; rank++) {
+    for (int i = 0; i < list->item_count; i++) {
+      if (groceryStoreRank(list->items[i].store) != rank) continue;
+      if (seen == n) return i;
+      seen++;
+    }
+  }
+  return -1;
+}
+
 void drawListCard(Canvas* canvas, int x, int y, int w, int h, const List* list, int list_index) {
   strokeRect(canvas, x, y, w, h, 3, 0);
   Rect card_rect = {x, y, w, h};
@@ -1236,6 +1269,44 @@ void drawListCard(Canvas* canvas, int x, int y, int w, int h, const List* list, 
 
   drawTextCentered(canvas, x + w / 2, y + 14, w - 24, title, 4, 0);
   line(canvas, x + 10, y + 52, x + w - 10, y + 52, 2, 0);
+
+  if (strcmp(list->key, "grocery") == 0 && list->item_count > 0) {
+    // Phase 3.1: grocery renders grouped by shop sublist (header per store).
+    int y_cursor = y + 66;
+    const int bottom_limit = y + h - 76;  // room for +N MORE / tap hint
+    int prev_rank = -1;
+    int shown_items = 0;
+    for (int n = 0; n < list->item_count; n++) {
+      const int idx = groceryOrderedItemIndex(list, n);
+      if (idx < 0) break;
+      const int rank = groceryStoreRank(list->items[idx].store);
+      if (rank != prev_rank) {
+        if (y_cursor + 30 > bottom_limit) break;
+        drawTextClipped(canvas, x + 18, y_cursor, w - 36, groceryStoreLabel(list->items[idx].store), 2, 0);
+        y_cursor += 30;
+        prev_rank = rank;
+      }
+      if (y_cursor + 42 > bottom_limit) break;
+      char row[128];
+      char item_text[96];
+      upperCopy(item_text, sizeof(item_text), list->items[idx].text);
+      snprintf(row, sizeof(row), "%s %.52s", list->items[idx].done ? "[X]" : "[ ]", item_text);
+      drawTextClipped(canvas, x + 18, y_cursor, w - 36, row, 3, 0);
+      y_cursor += 42;
+      shown_items++;
+    }
+    if (shown_items < list->item_count && h >= 190) {
+      char more[48];
+      snprintf(more, sizeof(more), "+%d MORE", list->item_count - shown_items);
+      drawTextClipped(canvas, x + 18, y + h - 68, 180, more, 3, 0);
+    }
+    if (h >= 160) {
+      const int hint_scale = h < 172 ? 2 : 3;
+      drawTextCentered(canvas, x + w / 2, y + h - 34, w - 24, "[ TAP TO OPEN ]", hint_scale, 0);
+    }
+    return;
+  }
+
   int row_capacity = (h - 124) / 42;
   if (row_capacity < 1) row_capacity = 1;
   const int max_preview_rows = list_index == 1 ? 8 : 5;
@@ -1369,7 +1440,39 @@ void drawFullListDashboard(Canvas* canvas, const Dashboard* dashboard, int list_
   const int row_h = 72;
   const int row_gap = 10;
   const int first_y = list_header_y + list_header_h + 18;
-  const int max_rows = (shell_y + shell_h - first_y - 24) / (row_h + row_gap);
+  const int bottom = shell_y + shell_h - 24;
+
+  if (strcmp(list->key, "grocery") == 0) {
+    // Phase 3.1: grouped by shop sublist; header rows between store groups.
+    int y_cursor = first_y;
+    int prev_rank = -1;
+    for (int n = 0; n < list->item_count; n++) {
+      const int idx = groceryOrderedItemIndex(list, n);
+      if (idx < 0) break;
+      const int rank = groceryStoreRank(list->items[idx].store);
+      if (rank != prev_rank) {
+        if (y_cursor + 40 > bottom) break;
+        drawTextClipped(canvas, row_x + 4, y_cursor, row_w - 8, groceryStoreLabel(list->items[idx].store), 2, 0);
+        line(canvas, row_x + 4, y_cursor + 32, row_x + row_w - 4, y_cursor + 32, 2, 0);
+        y_cursor += 40;
+        prev_rank = rank;
+      }
+      if (y_cursor + row_h > bottom) break;
+      const int row_y = y_cursor;
+      Rect row_rect = {row_x, row_y, row_w, row_h};
+      strokeRect(canvas, row_rect.x, row_rect.y, row_rect.w, row_rect.h, 2, 0);
+      addTouchRegion(row_rect, kTouchToggleItem, list_index, idx, list->items[idx].id, list->items[idx].done);
+      char row[160];
+      char item_text[96];
+      upperCopy(item_text, sizeof(item_text), list->items[idx].text);
+      snprintf(row, sizeof(row), "%s %.46s", list->items[idx].done ? "[X]" : "[ ]", item_text);
+      drawTextClipped(canvas, row_x + 18, row_y + 20, row_w - 36, row, 3, 0);
+      y_cursor += row_h + row_gap;
+    }
+    return;
+  }
+
+  const int max_rows = (bottom - first_y) / (row_h + row_gap);
   const int shown = list->item_count < max_rows ? list->item_count : max_rows;
   for (int i = 0; i < shown; i++) {
     const int row_y = first_y + i * (row_h + row_gap);

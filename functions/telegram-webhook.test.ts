@@ -9,6 +9,7 @@ import {
   parseEventHeuristically,
   applySlotHint,
   isValidSlotName,
+  extractGroceryStore,
   PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
@@ -473,6 +474,62 @@ test("parseEventHeuristically stays owner-routed (no calendar_slot field)", () =
   const a = parseEventHeuristically("schedule dentist friday 3pm", NOW, "Asia/Kolkata");
   assert.ok(a);
   assert.equal("calendar_slot" in a, false);
+});
+
+// ---- phase 3.1: grocery shop sublists ----
+
+test("extractGroceryStore: names the shop and strips it from the message", () => {
+  assert.deepEqual(extractGroceryStore("add paneer to indian grocery"), { store: "indian", cleaned: "add paneer to" });
+  assert.deepEqual(extractGroceryStore("add ayran from turkish market"), { store: "turkish", cleaned: "add ayran from" });
+  assert.deepEqual(extractGroceryStore("add brood to albert heijn"), { store: "ah", cleaned: "add brood to" });
+  assert.deepEqual(extractGroceryStore("add milk to groceries"), { store: null, cleaned: "add milk to groceries" });
+});
+
+test("grocery add with store keyword routes to the store sublist", () => {
+  const a = parseMessageHeuristically("add paneer to indian grocery") as any;
+  assert.equal(a.kind, "planner");
+  assert.equal(a.list_key, "grocery");
+  assert.deepEqual(a.items, ["paneer"]);
+  assert.equal(a.store, "indian");
+});
+
+test("grocery add via bare shop name implies the grocery list", () => {
+  const a = parseMessageHeuristically("add brood to ah") as any;
+  assert.equal(a.list_key, "grocery");
+  assert.deepEqual(a.items, ["brood"]);
+  assert.equal(a.store, "ah");
+});
+
+test("plain grocery add carries no store (defaults to ah at write time)", () => {
+  const a = parseMessageHeuristically("add milk to groceries") as any;
+  assert.equal(a.list_key, "grocery");
+  assert.equal("store" in a, false);
+});
+
+test("store keyword never leaks into non-grocery lists", () => {
+  const a = parseMessageHeuristically("add indian cookbook to todo") as any;
+  assert.equal(a.list_key, "todo");
+  assert.equal("store" in a, false);
+  assert.ok(!/store/.test(a.items[0]), "store words stripped from item text");
+});
+
+test("validateTelegramAction keeps a valid store and drops junk store values", () => {
+  const good = validateTelegramAction({ kind: "planner", action: "add", list_key: "grocery", items: ["paneer"], store: "INDIAN" });
+  assert.ok(good);
+  assert.equal((good as any).store, "indian", "normalized to lowercase");
+
+  const dropped = validateTelegramAction({ kind: "planner", action: "add", list_key: "grocery", items: ["x"], store: "carrefour" });
+  assert.ok(dropped);
+  assert.equal("store" in dropped, false, "unknown shop dropped, add still accepted");
+
+  const todo = validateTelegramAction({ kind: "planner", action: "add", list_key: "todo", items: ["x"], store: "ah" });
+  assert.ok(todo);
+  assert.equal("store" in todo, false, "store ignored for non-grocery lists");
+});
+
+test("PLANNER_SYSTEM_PROMPT documents the grocery store sublists", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /"store":"ah\|turkish\|indian/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /Albert Heijn/);
 });
 
 test("applySlotHint: 'add X to <name> calendar' routes and strips (no trigger verb)", () => {

@@ -7,6 +7,7 @@ type PlannerItem = {
   list_key: ListKey;
   text: string;
   done: boolean;
+  store?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -152,7 +153,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   ] = await Promise.all([
     admin.database
       .from("planner_items")
-      .select("id,list_key,text,done,created_at,updated_at")
+      .select("id,list_key,text,done,store,created_at,updated_at")
       .in("list_key", ["todo", "workout", "grocery"])
       .order("created_at", { ascending: false }),
     admin.database
@@ -242,7 +243,8 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
           id: item.id,
           text: item.text,
           done: item.done,
-          updated_at: item.updated_at
+          updated_at: item.updated_at,
+          ...(key === "grocery" && item.store ? { store: item.store } : {})
         }))
     })),
     calendar

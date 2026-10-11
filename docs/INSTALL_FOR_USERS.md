@@ -175,6 +175,16 @@ put leg day on workout
 add clean desk to todo
 ```
 
+The grocery list has three shop sublists — Albert Heijn, Turkish market, and
+Indian store. Name the shop to file the item there (unspecified items default
+to Albert Heijn):
+
+```text
+add paneer to indian grocery
+add ayran from turkish market
+add brood to albert heijn
+```
+
 Mark items done:
 
 ```text

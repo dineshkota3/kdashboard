@@ -10,7 +10,8 @@ const schemaMigrations = [
   "migrations/20260707000000_enable_rls_private_tables.sql",
   "migrations/20260710000000_create-google-calendar-state.sql",
   "migrations/20261011000000_google-calendar-multicalendar.sql",
-  "migrations/20261011010000_create-calendar-reminders.sql"
+  "migrations/20261011010000_create-calendar-reminders.sql",
+  "migrations/20261011020000_add-planner-store.sql"
 ];
 
 const sampleDataMigrations = [];

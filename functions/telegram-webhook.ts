@@ -6,6 +6,7 @@ type PlannerAction = {
   list_key: ListKey;
   items: string[];
   all_lists?: boolean;
+  store?: string;
 };
 
 type HealthTargetAction = {
@@ -113,6 +114,7 @@ export default async function(req: Request): Promise<Response> {
 export const PLANNER_SYSTEM_PROMPT = [
   "You parse one Telegram dashboard message into strict JSON and respond with only the JSON object.",
   "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
+  "The grocery list has three shop sublists. For a grocery add, set \"store\":\"ah|turkish|indian\" when the message names the shop (Albert Heijn/AH -> ah, Turkish market -> turkish, Indian store/market -> indian). Omit \"store\" for plain grocery items - they land on Albert Heijn. Never set store for non-grocery lists.",
   "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
   "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
@@ -483,7 +485,13 @@ async function applyPlannerAction(admin: any, action: PlannerAction): Promise<st
   }
 
   if (action.action === "add") {
-    const rows = action.items.map((text) => ({ list_key: action.list_key, text, done: false }));
+    // Grocery items land on a shop sublist; unspecified defaults to Albert Heijn.
+    const rows = action.items.map((text) => ({
+      list_key: action.list_key,
+      text,
+      done: false,
+      ...(action.list_key === "grocery" ? { store: action.store || "ah" } : {})
+    }));
     const { error } = await admin.database.from("planner_items").insert(rows);
     if (error) throw error;
     return `Added ${action.items.join(", ")} to ${listName}.`;
@@ -691,6 +699,36 @@ function detectListKey(message: string): ListKey {
   return "todo";
 }
 
+// ---- phase 3.1: grocery shop sublists ----
+
+export const GROCERY_STORES = ["ah", "turkish", "indian"];
+
+// Phrases longest-first per store so "turkish market" wins over "turkish".
+const STORE_ALIASES: Array<{ store: string; phrases: string[] }> = [
+  { store: "ah", phrases: ["albert heijn", "ah"] },
+  { store: "turkish", phrases: ["turkish market", "turkish"] },
+  { store: "indian", phrases: ["indian grocery", "indian store", "indian market", "indian"] }
+];
+
+// Detects which shop a grocery message names ("add paneer to indian grocery")
+// and returns the message with that phrase removed so the item text stays clean.
+export function extractGroceryStore(message: string): { store: string | null; cleaned: string } {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  for (const entry of STORE_ALIASES) {
+    for (const phrase of entry.phrases) {
+      const pattern = new RegExp(`\\b${phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+      const match = normalized.match(pattern);
+      if (match && match.index !== undefined) {
+        const cleaned = `${normalized.slice(0, match.index)} ${normalized.slice(match.index + match[0].length)}`
+          .replace(/\s+/g, " ")
+          .trim();
+        return { store: entry.store, cleaned };
+      }
+    }
+  }
+  return { store: null, cleaned: normalized };
+}
+
 export function parseMessageHeuristically(message: string): TelegramAction {
   const challengeAction = parseChallengeHeuristically(message);
   if (challengeAction) return challengeAction;
@@ -698,15 +736,23 @@ export function parseMessageHeuristically(message: string): TelegramAction {
   const targetAction = parseTargetHeuristically(message);
   if (targetAction) return targetAction;
 
-  const normalized = message.trim().replace(/\s+/g, " ");
-  const explicitList = hasExplicitList(normalized);
+  const { store, cleaned } = extractGroceryStore(message.trim().replace(/\s+/g, " "));
+  const normalized = cleaned;
+  let explicitList = hasExplicitList(normalized);
+  if (!explicitList && store) {
+    // "add brood to ah" — naming the shop implies the grocery list.
+    explicitList = true;
+  }
   if (!explicitList) {
     const eventAction = parseEventHeuristically(normalized);
     if (eventAction) return eventAction;
   }
 
   const lower = normalized.toLowerCase();
-  const listKey = detectListKey(normalized);
+  let listKey = detectListKey(normalized);
+  if (!hasExplicitList(normalized) && store) {
+    listKey = "grocery";
+  }
 
   let action: PlannerAction["action"] = "add";
   if (/\b(undo|uncheck|not done|incomplete)\b/.test(lower)) {
@@ -747,7 +793,8 @@ export function parseMessageHeuristically(message: string): TelegramAction {
         : items.length > 0
           ? items
           : [withoutAction || normalized],
-    all_lists: !explicitList && (action === "complete" || action === "uncomplete" || action === "delete")
+    all_lists: !explicitList && (action === "complete" || action === "uncomplete" || action === "delete"),
+    ...(listKey === "grocery" && store ? { store } : {})
   };
 }
 
@@ -909,12 +956,14 @@ function validatePlannerAction(input: unknown): PlannerAction | null {
 
   if (candidate.action !== "clear" && items.length === 0) return null;
 
+  const rawStore = typeof candidate.store === "string" ? candidate.store.trim().toLowerCase() : "";
   return {
     kind: "planner",
     action: candidate.action as PlannerAction["action"],
     list_key: candidate.list_key as ListKey,
     items,
-    all_lists: Boolean(candidate.all_lists)
+    all_lists: Boolean(candidate.all_lists),
+    ...(candidate.list_key === "grocery" && GROCERY_STORES.includes(rawStore) ? { store: rawStore } : {})
   };
 }
 

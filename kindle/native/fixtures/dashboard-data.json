@@ -64,16 +64,40 @@
       "title": "Grocery",
       "items": [
         {
-          "id": "3",
+          "id": "g1",
           "text": "Milk",
           "done": false,
-          "updated_at": "2026-06-28T08:10:00.000Z"
+          "store": "ah"
         },
         {
-          "id": "4",
-          "text": "Eggs",
+          "id": "g2",
+          "text": "Bread",
+          "done": true,
+          "store": "ah"
+        },
+        {
+          "id": "g3",
+          "text": "Ayran",
           "done": false,
-          "updated_at": "2026-06-28T08:11:00.000Z"
+          "store": "turkish"
+        },
+        {
+          "id": "g4",
+          "text": "Olives",
+          "done": false,
+          "store": "turkish"
+        },
+        {
+          "id": "g5",
+          "text": "Paneer",
+          "done": false,
+          "store": "indian"
+        },
+        {
+          "id": "g6",
+          "text": "Basmati rice",
+          "done": false,
+          "store": "indian"
         }
       ]
     }
