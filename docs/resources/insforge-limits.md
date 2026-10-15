@@ -71,3 +71,4 @@ Investigate before deploying more if, mid-cycle:
 | Date | Cycle day | function_calls | egress | db | Notes |
 |---|---|---|---|---|---|
 | 2026-10-11 | 3 | 1,130 | 142.67 MB | 12.57 MB | Phase 3.1 deploy day; includes E2E webhook tests |
+| 2026-10-15 | 7 | 1,853 | 226.04 MB | 12.96 MB | First cycle with the reminders cron (96 calls/day, the largest consumer). Pace ~181 calls/day + ~21 MB egress/day → projects to ~5.4% calls / ~13% egress at cycle end. No breach risk. |
