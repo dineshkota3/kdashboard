@@ -117,57 +117,14 @@ test("meal text no longer produces meal/recipe actions", () => {
   }
 });
 
-// ---- health targets ----
 
-test("set steps target", () => {
-  const a = parseMessageHeuristically("set steps target to 12000") as any;
-  assert.equal(a.kind, "target");
-  assert.equal(a.metric, "steps");
-  assert.equal(a.value, 12000);
-});
-
-test("set calories target", () => {
-  const a = parseMessageHeuristically("change calories goal to 2200") as any;
-  assert.equal(a.kind, "target");
-  assert.equal(a.metric, "calories");
-  assert.equal(a.value, 2200);
-});
 
 // ---- challenge check-ins ----
 
-test("water logging with liters", () => {
-  const a = parseMessageHeuristically("drank 1L water") as any;
-  assert.equal(a.kind, "challenge");
-  assert.equal(a.action, "add_water");
-  assert.equal(a.value, 1);
-});
 
-test("water logging with ml", () => {
-  const a = parseMessageHeuristically("drank 500ml water") as any;
-  assert.equal(a.kind, "challenge");
-  assert.equal(a.action, "add_water");
-  assert.equal(a.value, 0.5);
-});
 
-test("bare water mention defaults to 1L", () => {
-  const a = parseMessageHeuristically("water") as any;
-  assert.equal(a.kind, "challenge");
-  assert.equal(a.action, "add_water");
-  assert.equal(a.value, 1);
-});
 
-test("sleep logging", () => {
-  const a = parseMessageHeuristically("slept 7.5 hours") as any;
-  assert.equal(a.kind, "challenge");
-  assert.equal(a.action, "set_sleep");
-  assert.equal(a.value, 7.5);
-});
 
-test("workout check-in", () => {
-  const a = parseMessageHeuristically("gym done today") as any;
-  assert.equal(a.kind, "challenge");
-  assert.equal(a.action, "add_workout");
-});
 
 // ---- validators (LLM JSON gate) ----
 
@@ -201,17 +158,6 @@ test("validateTelegramAction rejects add with empty items", () => {
 test("validateTelegramAction accepts clear with empty items", () => {
   const a = validateTelegramAction({ kind: "planner", action: "clear", list_key: "todo", items: [] });
   assert.ok(a);
-});
-
-test("validateTelegramAction rejects bad target values", () => {
-  assert.equal(validateTelegramAction({ kind: "target", action: "set_target", metric: "steps", value: -5 }), null);
-  assert.equal(validateTelegramAction({ kind: "target", action: "set_target", metric: "flops", value: 5 }), null);
-});
-
-test("validateTelegramAction accepts challenge action", () => {
-  const a = validateTelegramAction({ kind: "challenge", action: "add_water", value: 1 });
-  assert.ok(a);
-  assert.equal((a as any).action, "add_water");
 });
 
 test("validateTelegramAction rejects kind none (LLM no-action guard)", () => {
@@ -556,27 +502,6 @@ test("parseQueryMessage: today's events route to events_today", () => {
 
 // ---- phase 4: per-person health targets ----
 
-test("per-person steps target routes to keethu", () => {
-  const a = parseMessageHeuristically("set steps target for keethu to 6000") as any;
-  assert.equal(a.kind, "target");
-  assert.equal(a.metric, "steps");
-  assert.equal(a.value, 6000);
-  assert.equal(a.person, "keethu");
-});
-
-test("target without a person defaults to dinesh (no person field)", () => {
-  const a = parseMessageHeuristically("set steps target to 12000") as any;
-  assert.equal(a.kind, "target");
-  assert.equal(a.metric, "steps");
-  assert.equal("person" in a, false);
-});
-
-test("unknown person name is dropped from targets", () => {
-  const a = validateTelegramAction({ kind: "target", action: "set_target", metric: "calories", value: 2000, person: "craig" });
-  assert.ok(a);
-  assert.equal("person" in a, false);
-});
-
 test("dinner with keethu never becomes a target action", () => {
   // The heuristic fallback cannot answer it; the LLM path handles clarify.
   const a = parseMessageHeuristically("dinner with keethu friday") as any;
@@ -689,4 +614,40 @@ test("applySlotHint: planner message containing 'calendar' is left intact when n
   const hint = applySlotHint(message, SLOTS);
   assert.equal(hint.slot, null);
   assert.equal(hint.message, message);
+});
+
+// ---- phase 4: pregnancy tasks + nutrition ----
+
+test("parseQueryMessage: pregnancy tasks and nutrition route", () => {
+  assert.equal(parseQueryMessage("tasks")?.query, "pregnancy_tasks");
+  assert.equal(parseQueryMessage("care tasks")?.query, "pregnancy_tasks");
+  assert.equal(parseQueryMessage("pregnancy tasks")?.query, "pregnancy_tasks");
+  assert.equal(parseQueryMessage("nutrition this week")?.query, "nutrition");
+  assert.equal(parseQueryMessage("what vitamins")?.query, "nutrition");
+  assert.equal(parseQueryMessage("what should she eat this week")?.query, "nutrition");
+});
+
+test("task completion messages are not queries (they reach the LLM path)", () => {
+  assert.equal(parseQueryMessage("kraamzorg done"), null);
+  assert.equal(parseQueryMessage("mark kraamzorg done"), null);
+  assert.equal(parseQueryMessage("kinkhoest booked"), null);
+});
+
+test("validateTelegramAction accepts pregnancy task + nutrition queries", () => {
+  assert.equal(validateTelegramAction({ kind: "query", query: "pregnancy_tasks" })?.query, "pregnancy_tasks");
+  assert.equal(validateTelegramAction({ kind: "query", query: "nutrition" })?.query, "nutrition");
+});
+
+test("validateTelegramAction accepts a pregnancy task completion", () => {
+  const a = validateTelegramAction({ kind: "pregnancy_task", action: "complete_task", task: "kraamzorg" });
+  assert.ok(a);
+  assert.equal(a.kind, "pregnancy_task");
+  assert.equal((a as any).task, "kraamzorg");
+  assert.equal(validateTelegramAction({ kind: "pregnancy_task", action: "complete_task", task: "  " }), null);
+});
+
+test("PLANNER_SYSTEM_PROMPT documents pregnancy tasks + nutrition queries", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /pregnancy_task/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /"nutrition"/);
+  assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /challenge|add_water|set_target/);
 });

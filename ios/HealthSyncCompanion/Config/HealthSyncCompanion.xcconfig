@@ -1,4 +1,0 @@
-INSFORGE_HEALTH_SYNC_URL = https:/$()/your-project.insforge.app/functions/health-sync
-HEALTH_SYNC_TOKEN =
-
-#include? "LocalConfig.xcconfig"

@@ -95,7 +95,7 @@ check("native binary builds cleanly", () => {
 });
 
 const tmp = mkdtempSync(join(tmpdir(), "kdash-test-"));
-for (const view of [null, "challenge", "chores", "workout", "grocery", "calendar", "health", "pregnancy", "health-steps", "health-hr"]) {
+for (const view of [null, "chores", "workout", "grocery", "calendar", "pregnancy"]) {
   check(`render view=${view ?? "home"} at PW5 resolution`, () => {
     const out = join(tmp, `view-${view ?? "home"}.pgm`);
     const args = ["--render", join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "--dump-pgm", out, "--dump-size", "1236x1648"];
@@ -196,32 +196,20 @@ check("phase 3.1: not_connected aggregate with one dead feed still renders both 
 
 // ---- phase 4: health screens ----
 
-check("phase 4: fixture carries two health people + configured pregnancy", () => {
+check("phase 4: fixture has no health/challenge keys and carries tasks+nutrition", () => {
   const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
-  assert.equal(fixture.health.people.length, 2);
-  assert.equal(fixture.health.people[0].person, "dinesh");
+  assert.equal(fixture.health, undefined);
+  assert.equal(fixture.challenge, undefined);
+  assert.ok(Array.isArray(fixture.tasks) && fixture.tasks.length >= 10, "tasks seeded");
+  assert.ok(fixture.tasks.some((t) => t.done && t.due_week <= 16), "done + overdue mix present");
   assert.equal(fixture.pregnancy.configured, true);
-  assert.equal(fixture.pregnancy.milestones.length, 8);
+  assert.equal(fixture.nutrition.week, 23);
 });
 
-check("phase 4: health + pregnancy views render non-blank", () => {
+check("phase 4: pregnancy view renders non-blank", () => {
   const fixturePath = join(ROOT, "kindle/native/fixtures/dashboard-data.json");
-  for (const view of ["health", "pregnancy", "health-steps", "health-hr"]) {
-    const bytes = renderToPgm(fixturePath, view);
-    assert.ok(darkPixelCount(bytes) > 20, `view=${view} render blank`);
-  }
-});
-
-check("phase 4: legacy payload without people/pregnancy still renders", () => {
-  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
-  const { people, ...healthCompat } = fixture.health;
-  const legacy = { ...fixture, health: healthCompat };
-  delete legacy.pregnancy;
-  const path = writeTempJson("legacy-no-people.json", legacy);
-  for (const view of [null, "health", "pregnancy"]) {
-    const bytes = renderToPgm(path, view);
-    assert.ok(darkPixelCount(bytes) > 20, `view=${view ?? "home"} render blank`);
-  }
+  const bytes = renderToPgm(fixturePath, "pregnancy");
+  assert.ok(darkPixelCount(bytes) > 20, "pregnancy render blank");
 });
 
 check("phase 4: unconfigured pregnancy renders the setup hint", () => {
@@ -232,7 +220,17 @@ check("phase 4: unconfigured pregnancy renders the setup hint", () => {
   assert.ok(darkPixelCount(bytes) > 20, "pregnancy render blank");
 });
 
-rmSync(tmp, { recursive: true, force: true });
+check("phase 4: legacy payload with health/challenge still renders (scoped parser tolerance)", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const legacy = {
+    ...fixture,
+    health: { date: "2026-10-17", steps: 1000, calories: 1500 },
+    challenge: { date: "2026-10-17", day: 5, water_l: 1, sleep_hours: 7, workouts: 1 }
+  };
+  const path = writeTempJson("legacy-health.json", legacy);
+  const bytes = renderToPgm(path, null);
+  assert.ok(darkPixelCount(bytes) > 20, "legacy render blank");
+});
 
 if (failures > 0) {
   console.error(`\n${failures} test(s) failed`);

@@ -9,21 +9,6 @@ type PlannerAction = {
   store?: string;
 };
 
-type HealthTargetAction = {
-  kind: "target";
-  action: "set_target";
-  metric: "steps" | "calories";
-  value: number;
-  unit?: string;
-  person?: string;
-};
-
-type ChallengeAction = {
-  kind: "challenge";
-  action: "add_water" | "set_sleep" | "add_workout";
-  value: number;
-};
-
 export type CalendarEventAction = {
   kind: "calendar";
   action: "create_event";
@@ -48,11 +33,19 @@ export type ClarifyAction = {
 // Nothing is stored - the answer goes back to the Telegram chat.
 export type QueryAction = {
   kind: "query";
-  query: "grocery" | "todo" | "workout" | "events_today" | "events_range";
+  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "nutrition";
   days?: number;
 };
 
-type TelegramAction = PlannerAction | HealthTargetAction | ChallengeAction | CalendarEventAction | ClarifyAction | QueryAction;
+// Phase 4: mark a pregnancy care task as done ("kraamzorg done"). The task
+// text is fuzzy-matched against the seeded checklist at apply time.
+type PregnancyTaskAction = {
+  kind: "pregnancy_task";
+  action: "complete_task";
+  task: string;
+};
+
+type TelegramAction = PlannerAction | PregnancyTaskAction | CalendarEventAction | ClarifyAction | QueryAction;
 
 type TelegramUpdate = {
   message?: {
@@ -125,12 +118,11 @@ export const PLANNER_SYSTEM_PROMPT = [
   "You parse one Telegram dashboard message into strict JSON and respond with only the JSON object.",
   "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
   "The grocery list has three shop sublists. For a grocery add, set \"store\":\"ah|turkish|indian\" when the message names the shop (Albert Heijn/AH -> ah, Turkish market -> turkish, Indian store/market -> indian). Omit \"store\" for plain grocery items - they land on Albert Heijn. Never set store for non-grocery lists.",
-  "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\",\"person\":\"dinesh|keethu\"}. Set \"person\" when the message names Keethu; omit it for the owner (dinesh).",
-  "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
-  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30.",
+  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|nutrition\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"nutrition\" gives this week's pregnancy nutrition + supplements.",
+  "For pregnancy care tasks return: {\"kind\":\"pregnancy_task\",\"action\":\"complete_task\",\"task\":\"<task words>\"} when the message marks a pregnancy care task as done (kraamzorg booking, kinkhoest vaccination, GBS swab, scans, hospital registration, baby shopping, hospital bag). Fuzzy-match the task words against the connected task list in the system context.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
 
@@ -214,8 +206,7 @@ function validateClarifyAction(input: unknown): ClarifyAction | null {
 async function applyTelegramAction(admin: any, action: TelegramAction): Promise<string> {
   if (action.kind === "clarify") return action.question;
   if (action.kind === "query") return applyQueryAction(admin, action);
-  if (isChallengeAction(action)) return applyChallengeAction(admin, action);
-  if (isTargetAction(action)) return applyHealthTargetAction(admin, action);
+  if (action.kind === "pregnancy_task") return applyPregnancyTaskAction(admin, action);
   if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
   return applyPlannerAction(admin, action);
 }
@@ -231,6 +222,10 @@ const SHOP_LABELS: Record<string, string> = {
 async function applyQueryAction(admin: any, action: QueryAction): Promise<string> {
   if (action.query === "events_today") return queryEventsWindow(admin, 1);
   if (action.query === "events_range") return queryEventsWindow(admin, action.days || 7);
+  if (action.query === "pregnancy_tasks") {
+    return listPregnancyTasksReply(await loadPregnancyTaskRows(admin), dashboardLocalDate());
+  }
+  if (action.query === "nutrition") return nutritionReply(dashboardLocalDate());
   return queryListItems(admin, action.query);
 }
 
@@ -579,51 +574,6 @@ function nowString(timezone: string): string {
   return `${fmt.format(now)} (${timezone})`;
 }
 
-async function applyChallengeAction(admin: any, action: ChallengeAction): Promise<string> {
-  const date = dashboardLocalDate();
-  const { data: existingRows, error: selectError } = await admin.database
-    .from("challenge_daily_logs")
-    .select("date,water_l,sleep_hours,workouts")
-    .eq("date", date)
-    .limit(1);
-  if (selectError) throw selectError;
-
-  const existing = Array.isArray(existingRows) && existingRows.length > 0 ? existingRows[0] : null;
-  const currentWater = Math.max(0, Number(existing?.water_l ?? 0));
-  const currentSleep = Math.max(0, Number(existing?.sleep_hours ?? 0));
-  const currentWorkouts = Math.max(0, Number(existing?.workouts ?? 0));
-  const next = {
-    water_l: currentWater,
-    sleep_hours: currentSleep,
-    workouts: currentWorkouts
-  };
-
-  if (action.action === "add_water") {
-    next.water_l = roundOneDecimal(currentWater + action.value);
-  } else if (action.action === "set_sleep") {
-    next.sleep_hours = roundOneDecimal(action.value);
-  } else if (action.action === "add_workout") {
-    next.workouts = currentWorkouts + Math.max(1, Math.round(action.value));
-  }
-
-  if (existing) {
-    const { error } = await admin.database
-      .from("challenge_daily_logs")
-      .update(next)
-      .eq("date", date);
-    if (error) throw error;
-  } else {
-    const { error } = await admin.database
-      .from("challenge_daily_logs")
-      .insert([{ date, ...next }]);
-    if (error) throw error;
-  }
-
-  if (action.action === "add_water") return `Logged ${formatNumber(action.value)}L water today (${formatNumber(next.water_l)}/3L).`;
-  if (action.action === "set_sleep") return `Logged sleep: ${formatNumber(next.sleep_hours)}/8h.`;
-  return `Logged workout ${next.workouts}/2 today.`;
-}
-
 async function applyPlannerAction(admin: any, action: PlannerAction): Promise<string> {
   const listName = plannerListLabel(action.list_key);
   if (action.action === "clear") {
@@ -683,38 +633,6 @@ function plannerListLabel(listKey: ListKey): string {
   return listKey === "todo" ? "chores" : listKey;
 }
 
-async function applyHealthTargetAction(admin: any, action: HealthTargetAction): Promise<string> {
-  const unit = action.unit || (action.metric === "steps" ? "steps" : "kcal");
-  const label = action.metric === "steps" ? "STEPS" : "CALORIES";
-  // Phase 4: targets are per person; messages without a person mean the owner.
-  const person = action.person === "keethu" ? "keethu" : "dinesh";
-  const personName = person === "keethu" ? "Keethu's" : "Dinesh's";
-
-  const { data: existing, error: selectError } = await admin.database
-    .from("health_targets")
-    .select("metric")
-    .eq("metric", action.metric)
-    .eq("person", person)
-    .limit(1);
-  if (selectError) throw selectError;
-
-  if (Array.isArray(existing) && existing.length > 0) {
-    const { error } = await admin.database
-      .from("health_targets")
-      .update({ label, target_value: action.value, unit })
-      .eq("metric", action.metric)
-      .eq("person", person);
-    if (error) throw error;
-  } else {
-    const { error } = await admin.database
-      .from("health_targets")
-      .insert([{ metric: action.metric, person, label, target_value: action.value, unit }]);
-    if (error) throw error;
-  }
-
-  return `Set ${personName} ${action.metric} target to ${formatNumber(action.value)} ${unit}.`;
-}
-
 async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
   const token = Deno.env.get("TELEGRAM_BOT_TOKEN");
   if (!token) return;
@@ -740,6 +658,130 @@ function corsHeaders(): HeadersInit {
   };
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// ---- Phase 4: pregnancy care tasks + nutrition ----
+
+type PregnancyTaskRow = {
+  key: string;
+  label: string;
+  detail: string;
+  due_week: number;
+  category: string;
+  done: boolean;
+};
+
+const GESTATION_DAYS = 280;
+const PREGNANCY_NUTRITION_TRIMESTERS: Array<{ untilWeek: number; lines: string[] }> = [
+  {
+    untilWeek: 13,
+    lines: [
+      "SMALL PORTIONS - GINGER EASES NAUSEA",
+      "NO RAW MEAT/FISH - NO SOFT RAW-MILK CHEESE"
+    ]
+  },
+  {
+    untilWeek: 27,
+    lines: [
+      "PROTEIN EVERY PLATE - IRON-RICH + VITAMIN C",
+      "CALCIUM DAILY - FIBER + PLENTY OF WATER"
+    ]
+  },
+  {
+    untilWeek: 99,
+    lines: [
+      "EXTRA PROTEIN - SMALL FREQUENT PORTIONS",
+      "OILY FISH 1X/WEEK - WATCH DIZZINESS/SWELLING"
+    ]
+  }
+];
+
+async function loadPregnancyTaskRows(admin: any): Promise<PregnancyTaskRow[]> {
+  const { data: rows, error } = await admin.database
+    .from("pregnancy_tasks")
+    .select("key,label,detail,due_week,category,done")
+    .order("due_week", { ascending: true });
+  if (error) throw error;
+  return Array.isArray(rows) ? rows as PregnancyTaskRow[] : [];
+}
+
+function pregnancyDueDate(): string {
+  const dueDate = (Deno.env.get("PREGNANCY_DUE_DATE") || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : "";
+}
+
+function gestationalWeek(today: string): number {
+  const dueDate = pregnancyDueDate();
+  if (!dueDate) return 0;
+  const dueIndex = Date.UTC(
+    Number(dueDate.slice(0, 4)), Number(dueDate.slice(5, 7)) - 1, Number(dueDate.slice(8, 10))
+  ) / 86400000;
+  const parts = today.split("-").map(Number);
+  const todayIndex = Date.UTC(parts[0], parts[1] - 1, parts[2]) / 86400000;
+  return Math.max(0, Math.floor(Math.max(0, todayIndex - (dueIndex - GESTATION_DAYS)) / 7));
+}
+
+function listPregnancyTasksReply(rows: PregnancyTaskRow[], today: string): string {
+  const week = gestationalWeek(today);
+  const open = rows.filter((row) => !row.done);
+  const doneCount = rows.length - open.length;
+  const lines: string[] = [`🤰 Week ${week} — ${open.length} task${open.length === 1 ? "" : "s"} open (${doneCount} done):`];
+  for (const row of open) {
+    const state = row.due_week <= week ? "OVERDUE" : `W${row.due_week}`;
+    lines.push(`• [${state}] ${row.label}`);
+  }
+  if (open.length === 0) lines.push("• nothing open — great job!");
+  return lines.join("\n");
+}
+
+async function applyPregnancyTaskAction(admin: any, action: PregnancyTaskAction): Promise<string> {
+  const rows = await loadPregnancyTaskRows(admin);
+  if (rows.length === 0) return "No pregnancy tasks configured.";
+  const today = dashboardLocalDate();
+
+  const query = action.task.trim().toLowerCase();
+  let best: PregnancyTaskRow | null = null;
+  let bestScore = 0;
+  for (const row of rows) {
+    const hay = `${row.key} ${row.label}`.toLowerCase();
+    if (hay.includes(query)) {
+      const score = 100 + query.length;
+      if (score > bestScore) { bestScore = score; best = row; }
+      continue;
+    }
+    let score = 0;
+    for (const word of query.split(/\s+/)) {
+      if (word.length > 2 && hay.includes(word)) score += word.length;
+    }
+    if (score > bestScore) { bestScore = score; best = row; }
+  }
+
+  if (!best) {
+    return `Unknown task "${action.task.slice(0, 40)}".\n${listPregnancyTasksReply(rows, today)}`;
+  }
+  if (best.done) {
+    return `${best.label} is already marked done.`;
+  }
+  const { error } = await admin.database
+    .from("pregnancy_tasks")
+    .update({ done: true, done_at: new Date().toISOString() })
+    .eq("key", best.key);
+  if (error) throw error;
+  return `✅ ${best.label} — marked done.`;
+}
+
+function nutritionReply(today: string): string {
+  const week = gestationalWeek(today);
+  const lines = (PREGNANCY_NUTRITION_TRIMESTERS.find((t) => week < t.untilWeek) ??
+    PREGNANCY_NUTRITION_TRIMESTERS[PREGNANCY_NUTRITION_TRIMESTERS.length - 1]).lines;
+  const supplements = ["Vitamine D 10 µg daily"];
+  if (week <= 10) supplements.push("Foliumzuur 0.5 mg daily (until week 10)");
+  supplements.push("No alcohol - caffeine < 200 mg/day");
+  return `🥗 Nutrition — week ${week}:\n${lines.map((line) => `• ${line}`).join("\n")}\n\n${supplements.map((s) => `• ${s}`).join("\n")}`;
+}
+
 export function parseFastHeuristicMessage(message: string): TelegramAction | null {
   const normalized = message.trim().replace(/\s+/g, " ");
   const lower = normalized.toLowerCase();
@@ -748,12 +790,6 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
     const eventAction = parseEventHeuristically(normalized);
     if (eventAction) return eventAction;
   }
-
-  const challengeAction = parseChallengeHeuristically(normalized);
-  if (challengeAction) return challengeAction;
-
-  const targetAction = parseTargetHeuristically(normalized);
-  if (targetAction) return targetAction;
 
   const queryAction = parseQueryMessage(normalized);
   if (queryAction) return queryAction;
@@ -784,7 +820,12 @@ export function parseQueryMessage(message: string): QueryAction | null {
   if (/\bgrocer(y|ies)|shopping list\b/.test(lower) && listy) {
     return { kind: "query", query: "grocery" };
   }
-  if (/\btodos?|to-?dos?|chores?|tasks?\b/.test(lower) && listy) {
+  // Pregnancy care tasks checked BEFORE the generic todo/list patterns so
+  // "care tasks" / "pregnancy tasks" never route to the chores list.
+  if (/\bpregnancy tasks?\b|\bcare tasks?\b|^tasks?$|^my tasks\b/.test(lower)) {
+    return { kind: "query", query: "pregnancy_tasks" };
+  }
+  if (/\btodos?|to-?dos?|chores?\b/.test(lower) && listy) {
     return { kind: "query", query: "todo" };
   }
   if (/\bworkout|exercise|training|gym\b/.test(lower) && listy) {
@@ -796,6 +837,9 @@ export function parseQueryMessage(message: string): QueryAction | null {
   const rangeDays = parseEventRangeDays(lower);
   if (rangeDays !== null && /\bevents?\b|\bcalendar\b|\bplans?\b|\bplanned?\b|\bwhat'?s on\b|\bscheduled?\b|\bagenda\b/.test(lower)) {
     return { kind: "query", query: "events_range", days: rangeDays };
+  }
+  if (/\bnutrition\b|\bvitamins?\b|\bsupplements?\b|\bwhat (should|do) (i|we|she) eat\b|\bfood this week\b/.test(lower)) {
+    return { kind: "query", query: "nutrition" };
   }
   return null;
 }
@@ -938,12 +982,6 @@ export function extractGroceryStore(message: string): { store: string | null; cl
 }
 
 export function parseMessageHeuristically(message: string): TelegramAction {
-  const challengeAction = parseChallengeHeuristically(message);
-  if (challengeAction) return challengeAction;
-
-  const targetAction = parseTargetHeuristically(message);
-  if (targetAction) return targetAction;
-
   const { store, cleaned } = extractGroceryStore(message.trim().replace(/\s+/g, " "));
   const normalized = cleaned;
   let explicitList = hasExplicitList(normalized);
@@ -1006,6 +1044,15 @@ export function parseMessageHeuristically(message: string): TelegramAction {
   };
 }
 
+function validatePregnancyTaskAction(input: unknown): PregnancyTaskAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<PregnancyTaskAction>;
+  if (candidate.kind !== "pregnancy_task" || candidate.action !== "complete_task") return null;
+  const task = typeof candidate.task === "string" ? candidate.task.trim().slice(0, 80) : "";
+  if (!task) return null;
+  return { kind: "pregnancy_task", action: "complete_task", task };
+}
+
 function validateQueryAction(input: unknown): QueryAction | null {
   if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<QueryAction>;
@@ -1015,12 +1062,15 @@ function validateQueryAction(input: unknown): QueryAction | null {
     if (!Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) return null;
     return { kind: "query", query: "events_range", days };
   }
+  if (candidate.query === "pregnancy_tasks" || candidate.query === "nutrition") {
+    return { kind: "query", query: candidate.query };
+  }
   if (candidate.query !== "grocery" && candidate.query !== "todo" && candidate.query !== "workout" && candidate.query !== "events_today") return null;
   return { kind: "query", query: candidate.query };
 }
 
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateChallengeAction(input) ?? validateTargetAction(input) ?? validateQueryAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+  return validateQueryAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
 export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {
@@ -1188,101 +1238,11 @@ function validatePlannerAction(input: unknown): PlannerAction | null {
   };
 }
 
-function validateTargetAction(input: unknown): HealthTargetAction | null {
-  if (!input || typeof input !== "object") return null;
-  const candidate = input as Partial<HealthTargetAction>;
-  if (candidate.kind !== "target" && candidate.action !== "set_target") return null;
-  if (candidate.action !== "set_target") return null;
-  if (candidate.metric !== "steps" && candidate.metric !== "calories") return null;
-  const value = Number(candidate.value);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  const unit = typeof candidate.unit === "string" && candidate.unit.trim()
-    ? candidate.unit.trim()
-    : candidate.metric === "steps" ? "steps" : "kcal";
-  const person = typeof candidate.person === "string" ? candidate.person.trim().toLowerCase() : "";
-  return {
-    kind: "target",
-    action: "set_target",
-    metric: candidate.metric,
-    value,
-    unit,
-    ...(person === "dinesh" || person === "keethu" ? { person } : {})
-  };
-}
-
-function validateChallengeAction(input: unknown): ChallengeAction | null {
-  if (!input || typeof input !== "object") return null;
-  const candidate = input as Partial<ChallengeAction>;
-  if (candidate.kind !== "challenge") return null;
-  if (candidate.action !== "add_water" && candidate.action !== "set_sleep" && candidate.action !== "add_workout") return null;
-  const value = Number(candidate.value);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return {
-    kind: "challenge",
-    action: candidate.action,
-    value
-  };
-}
-
-function parseTargetHeuristically(message: string): HealthTargetAction | null {
-  const normalized = message.trim().replace(/\s+/g, " ");
-  const lower = normalized.toLowerCase();
-  if (!/\b(target|goal|set|change|update)\b/.test(lower)) return null;
-  const metric = /\b(step|steps)\b/.test(lower) ? "steps" : /\b(calorie|calories|kcal)\b/.test(lower) ? "calories" : null;
-  if (!metric) return null;
-  const valueMatch = normalized.match(/(?:to|at|=|goal|target)\s*([0-9][0-9,]*(?:\.[0-9]+)?)/i) ?? normalized.match(/([0-9][0-9,]*(?:\.[0-9]+)?)/);
-  if (!valueMatch) return null;
-  const value = Number(valueMatch[1].replace(/,/g, ""));
-  if (!Number.isFinite(value) || value <= 0) return null;
-  // Per-person targets (Phase 4): "set steps target for keethu to 6000".
-  const personMatch = lower.match(/\b(keethu+|dinesh)\b/);
-  return {
-    kind: "target",
-    action: "set_target",
-    metric,
-    value,
-    unit: metric === "steps" ? "steps" : "kcal",
-    ...(personMatch ? { person: personMatch[1] === "dinesh" ? "dinesh" : "keethu" } : {})
-  };
-}
-
-function parseChallengeHeuristically(message: string): ChallengeAction | null {
-  const normalized = message.trim().replace(/\s+/g, " ");
-  const lower = normalized.toLowerCase();
-
-  if (/\b(slept|sleep)\b/.test(lower)) {
-    const hours = extractMacroNumber(normalized, /([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:h|hr|hrs|hour|hours)\b/i)
-      ?? extractMacroNumber(normalized, /\b(?:slept|sleep)\s+([0-9][0-9,]*(?:\.[0-9]+)?)/i);
-    if (hours && hours > 0) return { kind: "challenge", action: "set_sleep", value: hours };
-  }
-
-  if (/\b(water|hydrated|drank|drink)\b/.test(lower)) {
-    const liters = extractMacroNumber(normalized, /([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:l|liter|liters|litre|litres)\b/i);
-    const milliliters = extractMacroNumber(normalized, /([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:ml|milliliter|milliliters|millilitre|millilitres)\b/i);
-    const amount = liters ?? (milliliters ? milliliters / 1000 : /\bxl\s+water\b|\bwater\s+xl\b/.test(lower) ? 1 : 1);
-    return { kind: "challenge", action: "add_water", value: roundOneDecimal(amount) };
-  }
-
-  if (/\b(workout|exercise|training|gym)\b/.test(lower) && /\b(did|done|complete|completed|finished|marked|mark)\b/.test(lower)) {
-    return { kind: "challenge", action: "add_workout", value: 1 };
-  }
-
-  return null;
-}
-
 function extractMacroNumber(value: string, pattern: RegExp): number | null {
   const match = value.match(pattern);
   if (!match) return null;
   const parsed = Number(match[1].replace(/,/g, ""));
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
-
-function isTargetAction(action: TelegramAction): action is HealthTargetAction {
-  return (action as HealthTargetAction).kind === "target";
-}
-
-function isChallengeAction(action: TelegramAction): action is ChallengeAction {
-  return (action as ChallengeAction).kind === "challenge";
 }
 
 function formatNumber(value: number): string {

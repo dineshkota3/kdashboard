@@ -11,35 +11,18 @@ type PlannerItem = {
   updated_at: string;
 };
 
-type HealthSummary = {
-  date: string;
-  steps: number;
-  dietary_energy_kcal: string | number;
-  synced_at: string;
-  updated_at: string;
-};
-
-type HealthTarget = {
-  metric: "steps" | "calories";
+type PregnancyTask = {
+  key: string;
   label: string;
-  target_value: string | number;
-  unit: string;
-  updated_at: string;
-};
-
-type ChallengeLog = {
-  date: string;
-  water_l: string | number;
-  sleep_hours: string | number;
-  workouts: number;
-  updated_at: string;
+  due_week: number;
+  done: boolean;
 };
 
 type DashboardData = {
   items: PlannerItem[];
-  health: HealthSummary | null;
-  targets: HealthTarget[];
-  challenge: ChallengeLog | null;
+  tasks: PregnancyTask[];
+  pregnancyWeek: number;
+  pregnancyDay: number;
 };
 
 export default function(req: Request): Response {
@@ -125,52 +108,29 @@ async function loadDashboardData(): Promise<DashboardData> {
   const today = dashboardLocalDate();
 
   const baseStarted = timeMs();
-  const [
-    itemsResult,
-    healthResult,
-    challengeResult,
-    targetsResult
-  ] = await Promise.all([
+  const [itemsResult, tasksResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,created_at,updated_at")
       .in("list_key", ["todo", "workout", "grocery"])
       .order("created_at", { ascending: false }),
     admin.database
-      .from("health_daily_summaries")
-      .select("date,steps,dietary_energy_kcal,synced_at,updated_at")
-      .eq("source", "apple_health_ios")
-      .eq("date", today)
-      .limit(1),
-    admin.database
-      .from("challenge_daily_logs")
-      .select("date,water_l,sleep_hours,workouts,updated_at")
-      .eq("date", today)
-      .limit(1),
-    admin.database
-      .from("health_targets")
-      .select("metric,label,target_value,unit,updated_at")
-      .order("metric", { ascending: true })
+      .from("pregnancy_tasks")
+      .select("key,label,due_week,done")
+      .order("due_week", { ascending: true })
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
   const { data: items, error: itemsError } = itemsResult;
   if (itemsError) throw itemsError;
 
-  const { data: healthRows, error: healthError } = healthResult;
-  if (healthError) throw healthError;
-
-  const { data: challengeRows, error: challengeError } = challengeResult;
-  if (challengeError) throw challengeError;
-
-  const { data: targets, error: targetsError } = targetsResult;
-  if (targetsError) throw targetsError;
+  const { data: tasks, error: tasksError } = tasksResult;
+  if (tasksError) throw tasksError;
 
   const payload = {
     items: items as PlannerItem[],
-    health: firstRow<HealthSummary>(healthRows),
-    targets: targets as HealthTarget[],
-    challenge: firstRow<ChallengeLog>(challengeRows)
+    tasks: tasks as PregnancyTask[],
+    ...pregnancyProgress(today)
   };
   logTiming("kindle-dashboard-events", {
     base_query_ms: baseQueryMs,
@@ -180,17 +140,27 @@ async function loadDashboardData(): Promise<DashboardData> {
   return payload;
 }
 
+// Pregnancy week/day derived from PREGNANCY_DUE_DATE so the SSE hash rolls at
+// midnight (same math as kindle-dashboard-data.ts).
+function pregnancyProgress(today: string): { pregnancyWeek: number; pregnancyDay: number } {
+  const dueDate = (Deno.env.get("PREGNANCY_DUE_DATE") || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return { pregnancyWeek: 0, pregnancyDay: 0 };
+  const dueIndex = Date.UTC(
+    Number(dueDate.slice(0, 4)), Number(dueDate.slice(5, 7)) - 1, Number(dueDate.slice(8, 10))
+  ) / 86400000;
+  const todayParts = today.split("-").map(Number);
+  const todayIndex = Date.UTC(todayParts[0], todayParts[1] - 1, todayParts[2]) / 86400000;
+  const gestationalDays = Math.max(0, Math.round(todayIndex - (dueIndex - 280)));
+  return { pregnancyWeek: Math.floor(gestationalDays / 7), pregnancyDay: gestationalDays % 7 };
+}
+
 function getDashboardVersion(data: DashboardData): string {
   return hashText(JSON.stringify({
     items: [...data.items].sort((a, b) => a.updated_at.localeCompare(b.updated_at)),
-    health: data.health,
-    challenge: data.challenge,
-    targets: [...data.targets].sort((a, b) => a.metric.localeCompare(b.metric))
+    tasks: [...data.tasks].sort((a, b) => a.key.localeCompare(b.key)),
+    pregnancyWeek: data.pregnancyWeek,
+    pregnancyDay: data.pregnancyDay
   }));
-}
-
-function firstRow<T>(rows: unknown): T | null {
-  return Array.isArray(rows) && rows.length > 0 ? rows[0] as T : null;
 }
 
 function dashboardLocalDate(): string {

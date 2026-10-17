@@ -12,60 +12,25 @@ type PlannerItem = {
   updated_at: string;
 };
 
-type HealthTarget = {
-  metric: "steps" | "calories" | "exercise_minutes" | "sleep_hours" | "resting_hr";
-  person: string;
+type PregnancyTaskPayload = {
+  key: string;
   label: string;
-  target_value: string | number;
-  unit: string;
-  updated_at: string;
+  detail: string;
+  category: string;
+  due_week: number;
+  due_date: string;
+  due_display: string;
+  done: boolean;
+  overdue: boolean;
+  days_until: number;
 };
 
-type HealthSummary = {
-  date: string;
-  steps: number;
-  dietary_energy_kcal: string | number;
-  protein_g: string | number;
-  carbs_g?: string | number;
-  fat_g?: string | number;
-  exercise_minutes?: number;
-  resting_hr?: number;
-  sleep_hours?: string | number;
-  active_energy_kcal?: string | number;
-  distance_km?: string | number;
-  hrv_sdns_ms?: string | number;
-  respiratory_rate?: string | number;
-  vo2max?: string | number;
-  hourly?: Record<string, unknown>;
-  synced_at: string;
-  updated_at: string;
-};
-
-type HealthPersonPayload = {
-  person: string;
-  label: string;
-  date: string;
-  steps: number;
-  steps_target: number;
-  steps_unit: string;
-  sleep_h: number;
-  sleep_target_h: number;
-  exercise_minutes: number;
-  exercise_target: number;
-  resting_hr: number;
-  hrv_sdns_ms: number;
-  respiratory_rate: number;
-  vo2max: number;
-  score: number;
-  verdict: string;
-  steps_hit: boolean;
-  exercise_hit: boolean;
-  sleep_hit: boolean;
-  rest_hint: boolean;
-  hr_baseline: number;
-  hr_flag: string;
-  synced_at: string | null;
-  hourly: Record<string, unknown>;
+type PregnancyNutritionPayload = {
+  week: number;
+  line1: string;
+  line2: string;
+  supplement1: string;
+  supplement2: string;
 };
 
 type PregnancyMilestone = {
@@ -131,29 +96,9 @@ type DashboardPayload = {
   ok: true;
   generated_at: string;
   version: string;
-  health: {
-    date: string | null;
-    steps: number;
-    calories: number;
-    protein_g: number;
-    steps_target: number;
-    calories_target: number;
-    steps_unit: string;
-    calories_unit: string;
-    synced_at: string | null;
-    people: HealthPersonPayload[];
-  };
   pregnancy: PregnancyPayload;
-  challenge: {
-    date: string;
-    day: number;
-    water_l: number;
-    water_target_l: number;
-    sleep_hours: number;
-    sleep_target_hours: number;
-    workouts: number;
-    workout_target: number;
-  };
+  tasks: PregnancyTaskPayload[];
+  nutrition: PregnancyNutritionPayload;
   lists: Array<{
     key: ListKey;
     title: string;
@@ -174,16 +119,31 @@ const LIST_TITLES: Record<ListKey, string> = {
 };
 const COMPLETED_ITEM_HIDE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
-// Phase 4: two-person health. One Apple Health source per phone; the slot
-// vocabulary matches the calendar system (dinesh/keethu).
-const HEALTH_SOURCE_DINESH = "apple_health_ios";
-const HEALTH_SOURCE_KEETHU = "apple_health_ios_keethu";
-const HEALTH_SOURCES = [HEALTH_SOURCE_DINESH, HEALTH_SOURCE_KEETHU];
-const SLEEP_TARGET_HOURS = 8;
-const EXERCISE_TARGET_MINUTES = 30;
-const HR_BASELINE_WINDOW_DAYS = 7;
-const HR_FLAG_BPM_ABOVE_BASELINE = 7;
-const PERSON_SCORE_WEIGHTS = { steps: 0.4, exercise: 0.3, sleep: 0.3 };
+// Phase 4: pregnancy nutrition guidance (NL Voedingscentrum-aligned). The
+// supplements list is week-dependent (foliumzuur only until week 10).
+const PREGNANCY_NUTRITION_TRIMESTERS: Array<{ untilWeek: number; lines: string[] }> = [
+  {
+    untilWeek: 13,
+    lines: [
+      "SMALL PORTIONS - GINGER EASES NAUSEA",
+      "NO RAW MEAT/FISH - NO SOFT RAW-MILK CHEESE"
+    ]
+  },
+  {
+    untilWeek: 27,
+    lines: [
+      "PROTEIN EVERY PLATE - IRON-RICH + VITAMIN C",
+      "CALCIUM DAILY - FIBER + PLENTY OF WATER"
+    ]
+  },
+  {
+    untilWeek: 99,
+    lines: [
+      "EXTRA PROTEIN - SMALL FREQUENT PORTIONS",
+      "OILY FISH 1X/WEEK - WATCH DIZZINESS/SWELLING"
+    ]
+  }
+];
 
 export default async function(req: Request): Promise<Response> {
   const requestStarted = timeMs();
@@ -218,115 +178,36 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   });
 
   const baseStarted = timeMs();
-  const [
-    itemsResult,
-    healthResult,
-    healthBaselineResult,
-    challengeResult,
-    challengeStartResult,
-    targetsResult
-  ] = await Promise.all([
+  const [itemsResult, tasksResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,store,created_at,updated_at")
       .in("list_key", ["todo", "workout", "grocery"])
       .order("created_at", { ascending: false }),
     admin.database
-      .from("health_daily_summaries")
-      .select("date,source,steps,dietary_energy_kcal,protein_g,exercise_minutes,resting_hr,sleep_hours,active_energy_kcal,distance_km,hrv_sdns_ms,respiratory_rate,vo2max,hourly,synced_at,updated_at")
-      .in("source", HEALTH_SOURCES)
-      .eq("date", today),
-    admin.database
-      .from("health_daily_summaries")
-      .select("date,source,resting_hr")
-      .in("source", HEALTH_SOURCES)
-      .gte("date", addLocalDays(today, -HR_BASELINE_WINDOW_DAYS))
-      .lt("date", today)
-      .order("date", { ascending: false }),
-    admin.database
-      .from("challenge_daily_logs")
-      .select("date,water_l,sleep_hours,workouts,updated_at")
-      .eq("date", today)
-      .limit(1),
-    admin.database
-      .from("challenge_daily_logs")
-      .select("date")
-      .order("date", { ascending: true })
-      .limit(1),
-    admin.database
-      .from("health_targets")
-      .select("metric,person,label,target_value,unit,updated_at")
-      .order("metric", { ascending: true })
+      .from("pregnancy_tasks")
+      .select("key,label,detail,due_week,category,done")
+      .order("due_week", { ascending: true })
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
   const { data: items, error: itemsError } = itemsResult;
   if (itemsError) throw itemsError;
 
-  const { data: healthRows, error: healthError } = healthResult;
-  if (healthError) throw healthError;
-
-  const { data: baselineRows, error: baselineError } = healthBaselineResult;
-  if (baselineError) throw baselineError;
-
-  const { data: challengeRows, error: challengeError } = challengeResult;
-  if (challengeError) throw challengeError;
-
-  const { data: challengeStartRows, error: challengeStartError } = challengeStartResult;
-  if (challengeStartError) throw challengeStartError;
-
-  const { data: targets, error: targetsError } = targetsResult;
-  if (targetsError) throw targetsError;
+  const { data: taskRows, error: tasksError } = tasksResult;
+  if (tasksError) throw tasksError;
 
   const buildStarted = timeMs();
   const staleCompletedCutoff = Date.now() - COMPLETED_ITEM_HIDE_AFTER_MS;
   const plannerItems = (items as PlannerItem[]).filter((item) => shouldShowPlannerItem(item, staleCompletedCutoff));
   const calendar = await loadCalendarPayload(admin, today);
-  const healthBySource = new Map<string, HealthSummary>();
-  for (const row of (healthRows as HealthSummary[]) ?? []) {
-    if (row?.source) healthBySource.set(row.source, row);
-  }
-  const hrHistory = (baselineRows ?? []) as Array<{ source: string; resting_hr: number }>;
-  const health = healthBySource.get(HEALTH_SOURCE_DINESH) ?? null;
-  const challenge = firstRow<ChallengeLog>(challengeRows);
-  const challengeStart = firstRow<Pick<ChallengeLog, "date">>(challengeStartRows);
-  const challengeDay = challengeStart?.date ? challengeDayFor(today, challengeStart.date) : 1;
-  const healthTargets = targets as HealthTarget[];
-  const stepsTarget = metricTarget(healthTargets, "steps", "dinesh", 10000, "steps");
-  const caloriesTarget = metricTarget(healthTargets, "calories", "dinesh", 2000, "kcal");
-  const healthPeople = [
-    personHealth(healthBySource.get(HEALTH_SOURCE_DINESH) ?? null, "dinesh", today, healthTargets, hrHistory),
-    personHealth(healthBySource.get(HEALTH_SOURCE_KEETHU) ?? null, "keethu", today, healthTargets, hrHistory)
-  ];
 
   const payloadWithoutVersion = {
     ok: true as const,
     generated_at: `${today}T00:00:00+05:30`,
-    health: {
-      date: health?.date ?? null,
-      steps: Math.max(0, Number(health?.steps ?? 0)),
-      calories: Math.max(0, Number(health?.dietary_energy_kcal ?? 0)),
-      protein_g: Math.max(0, Number(health?.protein_g ?? 0)),
-      steps_target: Math.max(0, Number(stepsTarget.target_value)),
-      calories_target: Math.max(0, Number(caloriesTarget.target_value)),
-      steps_unit: stepsTarget.unit,
-      calories_unit: caloriesTarget.unit,
-      synced_at: health?.synced_at ?? null,
-      // Phase 4: per-person feeds. Compat fields above stay first (old binary +
-      // challenge view read them); people follows.
-      people: healthPeople
-    },
     pregnancy: pregnancyBlock(today),
-    challenge: {
-      date: today,
-      day: challengeDay,
-      water_l: Math.max(0, Number(challenge?.water_l ?? 0)),
-      water_target_l: 3,
-      sleep_hours: Math.max(0, Number(challenge?.sleep_hours ?? 0)),
-      sleep_target_hours: 8,
-      workouts: Math.max(0, Number(challenge?.workouts ?? 0)),
-      workout_target: 2
-    },
+    tasks: buildPregnancyTasks((taskRows ?? []) as PregnancyTaskRow[], today),
+    nutrition: nutritionBlock(today),
     lists: (["todo", "workout", "grocery"] as const).map((key) => ({
       key,
       title: LIST_TITLES[key],
@@ -350,11 +231,11 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   const payload = {
     ...payloadWithoutVersion,
     version: hashText(JSON.stringify({
-      health: payloadWithoutVersion.health,
-      challenge: payloadWithoutVersion.challenge,
+      pregnancy: payloadWithoutVersion.pregnancy,
+      tasks: payloadWithoutVersion.tasks,
+      nutrition: payloadWithoutVersion.nutrition,
       lists: payloadWithoutVersion.lists,
-      calendar: payloadWithoutVersion.calendar,
-      pregnancy: payloadWithoutVersion.pregnancy
+      calendar: payloadWithoutVersion.calendar
     }))
   };
   logTiming("kindle-dashboard-data", {
@@ -400,113 +281,10 @@ function addLocalDays(date: string, offset: number): string {
   return `${y}-${m}-${d}`;
 }
 
-function challengeDayFor(today: string, startDate: string): number {
-  const diff = localDateIndex(today) - localDateIndex(startDate);
-  if (!Number.isFinite(diff)) return 1;
-  return Math.max(1, Math.min(75, diff + 1));
-}
-
 function localDateIndex(value: string): number {
   const [year, month, day] = value.slice(0, 10).split("-").map(Number);
   if (!year || !month || !day) return Number.NaN;
   return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
-}
-
-function metricTarget(
-  targets: HealthTarget[],
-  metric: HealthTarget["metric"],
-  person: string,
-  fallbackValue: number,
-  fallbackUnit: string
-): HealthTarget {
-  return targets.find((target) => target.metric === metric && target.person === person) ?? {
-    metric,
-    person,
-    label: metric,
-    target_value: fallbackValue,
-    unit: fallbackUnit,
-    updated_at: ""
-  };
-}
-
-// ---- Phase 4: two-person health + pregnancy ----
-
-function personHealth(
-  row: HealthSummary | null,
-  person: string,
-  today: string,
-  targets: HealthTarget[],
-  hrHistory: Array<{ source: string; resting_hr: number }>
-): HealthPersonPayload {
-  const label = person.charAt(0).toUpperCase() + person.slice(1);
-  const stepsTarget = metricTarget(targets, "steps", person, person === "keethu" ? 6000 : 10000, "steps");
-  const steps = Math.max(0, Number(row?.steps ?? 0));
-  const sleepHours = Math.max(0, Number(row?.sleep_hours ?? 0));
-  const exerciseMinutes = Math.max(0, Number(row?.exercise_minutes ?? 0));
-  const restingHr = Math.max(0, Number(row?.resting_hr ?? 0));
-
-  const stepsRatio = Math.min(1, steps / Math.max(1, Number(stepsTarget.target_value)));
-  const exerciseRatio = Math.min(1, exerciseMinutes / EXERCISE_TARGET_MINUTES);
-  const sleepRatio = Math.min(1, sleepHours / SLEEP_TARGET_HOURS);
-  const score = Math.round(100 * (
-    PERSON_SCORE_WEIGHTS.steps * stepsRatio +
-    PERSON_SCORE_WEIGHTS.exercise * exerciseRatio +
-    PERSON_SCORE_WEIGHTS.sleep * sleepRatio
-  ));
-  const verdict = score >= 80 ? "GREAT" : score >= 60 ? "GOOD" : score >= 40 ? "OK" : "LOW";
-  const stepsHit = stepsRatio >= 1;
-  const exerciseHit = exerciseRatio >= 1;
-  const sleepHit = sleepRatio >= 1;
-
-  const baseline = hrBaseline(hrHistory, person === "keethu" ? HEALTH_SOURCE_KEETHU : HEALTH_SOURCE_DINESH);
-  const hrFlag = baseline <= 0 || restingHr <= 0
-    ? "none"
-    : restingHr >= baseline + HR_FLAG_BPM_ABOVE_BASELINE
-      ? "high"
-      : restingHr <= baseline - HR_FLAG_BPM_ABOVE_BASELINE
-        ? "low"
-        : "ok";
-  // Hint precedence: an elevated resting heart rate outranks the rest suggestion.
-  const hint = hrFlag === "high"
-    ? "HR ELEVATED"
-    : person === "keethu" && exerciseMinutes < EXERCISE_TARGET_MINUTES && sleepHours >= SLEEP_TARGET_HOURS
-      ? "REST"
-      : "";
-
-  return {
-    person,
-    label,
-    date: row?.date ?? today,
-    steps,
-    steps_target: Math.max(0, Number(stepsTarget.target_value)),
-    steps_unit: stepsTarget.unit,
-    sleep_h: Math.round(sleepHours * 10) / 10,
-    sleep_target_h: SLEEP_TARGET_HOURS,
-    exercise_minutes: exerciseMinutes,
-    exercise_target: EXERCISE_TARGET_MINUTES,
-    resting_hr: restingHr,
-    hrv_sdns_ms: Math.max(0, Number(row?.hrv_sdns_ms ?? 0)),
-    respiratory_rate: Math.max(0, Number(row?.respiratory_rate ?? 0)),
-    vo2max: Math.max(0, Number(row?.vo2max ?? 0)),
-    score,
-    verdict,
-    steps_hit: stepsHit,
-    exercise_hit: exerciseHit,
-    sleep_hit: sleepHit,
-    rest_hint: hint === "REST",
-    hr_baseline: baseline,
-    hr_flag: hrFlag,
-    synced_at: row?.synced_at ?? null,
-    hourly: row?.hourly && typeof row.hourly === "object" ? row.hourly : {}
-  };
-}
-
-function hrBaseline(history: Array<{ source: string; resting_hr: number }>, source: string): number {
-  const values = history
-    .filter((row) => row.source === source && Number(row.resting_hr) > 0)
-    .map((row) => Number(row.resting_hr));
-  if (values.length === 0) return 0;
-  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 }
 
 const GESTATION_DAYS = 280;
@@ -561,6 +339,69 @@ function formatShortDate(date: string): string {
   const [year, month, day] = date.split("-").map(Number);
   if (!year || !month || !day) return date;
   return `${months[month - 1]} ${String(day).padStart(2, "0")} ${year}`;
+}
+
+type PregnancyTaskRow = {
+  key: string;
+  label: string;
+  detail: string;
+  due_week: number;
+  category: string;
+  done: boolean;
+};
+
+// Due date for a task week: due + (week - 40) weeks (week 40 = due date).
+function taskDueDate(dueDate: string, dueWeek: number): string {
+  return addLocalDays(dueDate, (dueWeek - 40) * 7);
+}
+
+function pregnancyDueDate(): string {
+  const dueDate = (Deno.env.get("PREGNANCY_DUE_DATE") || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : "";
+}
+
+function buildPregnancyTasks(rows: PregnancyTaskRow[], today: string): PregnancyTaskPayload[] {
+  const dueDate = pregnancyDueDate();
+  const dueIndexBase = dueDate ? localDateIndex(dueDate) : Number.NaN;
+  const todayIndex = localDateIndex(today);
+  return rows
+    .map((row) => {
+      const rowDue = dueDate ? taskDueDate(dueDate, row.due_week) : "";
+      const rowDueIndex = dueDate ? localDateIndex(rowDue) : Number.NaN;
+      return {
+        key: row.key,
+        label: row.label,
+        detail: row.detail ?? "",
+        category: row.category ?? "CARE",
+        due_week: row.due_week,
+        due_date: rowDue,
+        due_display: rowDue ? formatShortDate(rowDue) : "",
+        done: Boolean(row.done),
+        overdue: !row.done && Number.isFinite(rowDueIndex) ? todayIndex > rowDueIndex : false,
+        days_until: Number.isFinite(rowDueIndex) ? rowDueIndex - todayIndex : 0
+      };
+    })
+    .sort((a, b) => a.due_week - b.due_week || Number(a.done) - Number(b.done));
+}
+
+function nutritionBlock(today: string): PregnancyNutritionPayload {
+  const dueDate = pregnancyDueDate();
+  const configured = Boolean(dueDate);
+  const week = configured
+    ? Math.max(0, Math.floor((localDateIndex(today) - (localDateIndex(dueDate) - GESTATION_DAYS)) / 7))
+    : 0;
+
+  const lines = (PREGNANCY_NUTRITION_TRIMESTERS.find((t) => week < t.untilWeek) ?? PREGNANCY_NUTRITION_TRIMESTERS[PREGNANCY_NUTRITION_TRIMESTERS.length - 1]).lines;
+  const supplements = ["VITAMINE D 10 UG DAILY"];
+  if (configured && week <= 10) supplements.push("FOLIUMZUUR 0.5 MG DAILY (TILL WEEK 10)");
+  supplements.push("NO ALCOHOL - CAFFEINE < 200 MG/DAY");
+  return {
+    week,
+    line1: lines[0] ?? "",
+    line2: lines[1] ?? "",
+    supplement1: supplements[0] ?? "",
+    supplement2: supplements[1] ?? ""
+  };
 }
 
 function firstRow<T>(rows: unknown): T | null {

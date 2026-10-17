@@ -41,12 +41,9 @@ volatile sig_atomic_t g_manual_fetch_refresh = 0;
 int g_last_screen_width = kBitmapFallbackWidth;
 int g_last_screen_height = kBitmapFallbackHeight;
 int g_active_list = -1;
-int g_active_challenge = 0;
 int g_active_calendar = 0;
 int g_active_calendar_feed = -1;
-int g_active_screen = 0;        // Phase 4: 0 = home, 1 = health, 2 = pregnancy
-int g_health_hour_person = -1;  // hourly drill-down overlay (person index)
-int g_health_hour_metric = -1;  // 0 steps, 1 sleep, 2 exercise, 3 heart
+int g_active_screen = 0;        // Phase 4: 0 = home, 1 = pregnancy, 2 = care timeline
 int g_swipe_invert_x = 0;
 int g_touch_press_seen = 0;
 int g_invert_images = 0;
@@ -59,17 +56,13 @@ enum TouchAction {
   kTouchOpenList = 3,
   kTouchToggleItem = 4,
   kTouchHome = 8,
-  kTouchOpenChallenge = 9,
   kTouchPreviousDay = 11,
   kTouchNextDay = 12,
   kTouchToday = 13,
   kTouchOpenCalendar = 14,
   kTouchScreenNext = 15,
   kTouchScreenPrev = 16,
-  kTouchOpenPregnancy = 17,
-  kTouchOpenHealthTile = 18,
-  kTouchHealthForDate = 19,
-  kTouchSetDayOffset = 20
+  kTouchOpenPregnancy = 17
 };
 
 struct Item {
@@ -105,42 +98,26 @@ struct CalendarFeed {
   CalendarEvent events[kMaxCalendarEvents];
 };
 
-// ---- Phase 4: two-person health + pregnancy ----
+// ---- Phase 4: pregnancy companion ----
 
-const int kMaxHealthPeople = 2;
-const int kMaxHourly = 24;
+const int kMaxPregnancyTasks = 16;
 const int kMaxPregnancyMilestones = 8;
 
-struct HealthPerson {
-  char person[16];
-  char label[24];
-  int steps;
-  int steps_target;
-  char steps_unit[16];
-  int sleep_tenths;
-  int sleep_target_tenths;
-  int exercise_minutes;
-  int exercise_target;
-  int resting_hr;
-  int hrv_tenths;
-  int resp_tenths;
-  int vo2_tenths;
-  int score;
-  char verdict[8];
-  int steps_hit;
-  int exercise_hit;
-  int sleep_hit;
-  int rest_hint;
-  int hr_baseline;
-  char hr_flag[8];
-  char synced_hm[8];  // "HH:MM" carved from the payload's synced_at
-  // Hourly spread (index = hour, count = highest populated hour + 1).
-  // sleep: 0 no data, 1 awake, 2 asleep.
-  int hourly_steps[kMaxHourly];
-  int hourly_exercise[kMaxHourly];
-  int hourly_hr[kMaxHourly];
-  int hourly_sleep[kMaxHourly];
-  int hourly_count;
+struct PregnancyTask {
+  char key[24];
+  char label[56];
+  char category[8];
+  int due_week;
+  int done;
+};
+
+struct NutritionStrip {
+  int configured;
+  int week;
+  char line1[64];
+  char line2[64];
+  char supplement1[64];
+  char supplement2[64];
 };
 
 struct PregnancyMilestone {
@@ -165,28 +142,15 @@ struct Pregnancy {
 struct Dashboard {
   char generated_at[40];
   char version[32];
-  int steps;
-  int calories;
-  int protein_g;
-  int challenge_day;
-  int water_tenths;
-  int water_target_tenths;
-  int sleep_tenths;
-  int sleep_target_tenths;
-  int workouts;
-  int workout_target;
-  int steps_target;
-  int calories_target;
-  char steps_unit[16];
-  char calories_unit[16];
   List lists[kMaxLists];
   int list_count;
   CalendarFeed calendar_feeds[kMaxCalendarFeeds];
   int calendar_feed_count;
   int calendar_connected;
-  HealthPerson people[kMaxHealthPeople];
-  int people_count;
   Pregnancy pregnancy;
+  PregnancyTask tasks[kMaxPregnancyTasks];
+  int task_count;
+  NutritionStrip nutrition;
 };
 
 struct Options {
@@ -510,81 +474,33 @@ void parseCalendarFeeds(const char* calendar_value, const char* calendar_end, Da
 
 // Phase 4: read a comma-separated int array (hourly buckets) into out (cap
 // out_cap); returns the number of values read.
-int parseIntArrayInRange(const char* range_start, const char* range_end, const char* key, int* out, int out_cap) {
-  const char* array_value = findKeyInRange(range_start, range_end, key);
-  if (!array_value || *array_value != '[') return 0;
-  const char* array_end = matchingClose(array_value, ']');
-  if (!array_end || (range_end && array_end > range_end)) return 0;
-  int count = 0;
-  const char* cursor = array_value + 1;
-  while (cursor < array_end && count < out_cap) {
-    while (cursor < array_end && (*cursor == ',' || *cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t')) cursor++;
-    if (cursor >= array_end || *cursor == ']') break;
-    char* end_ptr = NULL;
-    const long value = strtol(cursor, &end_ptr, 10);
-    if (end_ptr == cursor) break;
-    out[count++] = static_cast<int>(value);
-    cursor = end_ptr;
-  }
-  return count;
-}
-
-void parseHourly(const char* range_start, const char* range_end, HealthPerson* person) {
-  const char* hourly_value = findKeyInRange(range_start, range_end, "hourly");
-  if (!hourly_value || *hourly_value != '{') return;
-  const char* hourly_end = matchingClose(hourly_value, '}');
-  if (!hourly_end || hourly_end > range_end) return;
-  const int steps_count = parseIntArrayInRange(hourly_value, hourly_end, "steps", person->hourly_steps, kMaxHourly);
-  const int exercise_count = parseIntArrayInRange(hourly_value, hourly_end, "exercise_min", person->hourly_exercise, kMaxHourly);
-  const int hr_count = parseIntArrayInRange(hourly_value, hourly_end, "hr", person->hourly_hr, kMaxHourly);
-  const int sleep_count = parseIntArrayInRange(hourly_value, hourly_end, "sleep", person->hourly_sleep, kMaxHourly);
-  person->hourly_count = steps_count;
-  if (exercise_count > person->hourly_count) person->hourly_count = exercise_count;
-  if (hr_count > person->hourly_count) person->hourly_count = hr_count;
-  if (sleep_count > person->hourly_count) person->hourly_count = sleep_count;
-}
-
-int parseHealthPeople(const char* people_value, const char* people_end, Dashboard* dashboard) {
-  const char* cursor = people_value + 1;
-  while (cursor < people_end && dashboard->people_count < kMaxHealthPeople) {
+// Phase 4: pregnancy care checklist + nutrition strip.
+void parsePregnancyTasks(const char* tasks_value, const char* tasks_end, Dashboard* dashboard) {
+  const char* cursor = tasks_value + 1;
+  while (cursor < tasks_end && dashboard->task_count < kMaxPregnancyTasks) {
     const char* object_start = strchr(cursor, '{');
-    if (!object_start || object_start >= people_end) break;
+    if (!object_start || object_start >= tasks_end) break;
     const char* object_end = matchingClose(object_start, '}');
-    if (!object_end || object_end > people_end) break;
+    if (!object_end || object_end > tasks_end) break;
 
-    HealthPerson* person = &dashboard->people[dashboard->people_count];
-    extractString(object_start, object_end, "label", person->label, sizeof(person->label), "?");
-    extractString(object_start, object_end, "person", person->person, sizeof(person->person), "");
-    person->steps = extractInt(object_start, object_end, "steps", 0);
-    person->steps_target = extractInt(object_start, object_end, "steps_target", 10000);
-    extractString(object_start, object_end, "steps_unit", person->steps_unit, sizeof(person->steps_unit), "steps");
-    person->sleep_tenths = extractScaledInt(object_start, object_end, "sleep_h", 10, 0);
-    person->sleep_target_tenths = extractScaledInt(object_start, object_end, "sleep_target_h", 10, 80);
-    person->exercise_minutes = extractInt(object_start, object_end, "exercise_minutes", 0);
-    person->exercise_target = extractInt(object_start, object_end, "exercise_target", 30);
-    person->resting_hr = extractInt(object_start, object_end, "resting_hr", 0);
-    person->hrv_tenths = extractScaledInt(object_start, object_end, "hrv_sdns_ms", 10, 0);
-    person->resp_tenths = extractScaledInt(object_start, object_end, "respiratory_rate", 10, 0);
-    person->vo2_tenths = extractScaledInt(object_start, object_end, "vo2max", 10, 0);
-    person->score = extractInt(object_start, object_end, "score", 0);
-    extractString(object_start, object_end, "verdict", person->verdict, sizeof(person->verdict), "");
-    person->steps_hit = extractBool(object_start, object_end, "steps_hit", 0);
-    person->exercise_hit = extractBool(object_start, object_end, "exercise_hit", 0);
-    person->sleep_hit = extractBool(object_start, object_end, "sleep_hit", 0);
-    person->rest_hint = extractBool(object_start, object_end, "rest_hint", 0);
-    person->hr_baseline = extractInt(object_start, object_end, "hr_baseline", 0);
-    extractString(object_start, object_end, "hr_flag", person->hr_flag, sizeof(person->hr_flag), "");
-    {
-      char synced_at[40];
-      extractString(object_start, object_end, "synced_at", synced_at, sizeof(synced_at), "");
-      // Carve "HH:MM" out of the ISO timestamp for the sync strip.
-      copyText(person->synced_hm, sizeof(person->synced_hm), strlen(synced_at) >= 16 ? synced_at + 11 : "");
-    }
-    parseHourly(object_start, object_end, person);
-    dashboard->people_count++;
+    PregnancyTask* task = &dashboard->tasks[dashboard->task_count];
+    extractString(object_start, object_end, "key", task->key, sizeof(task->key), "");
+    extractString(object_start, object_end, "label", task->label, sizeof(task->label), "");
+    extractString(object_start, object_end, "category", task->category, sizeof(task->category), "CARE");
+    task->due_week = extractInt(object_start, object_end, "due_week", 0);
+    task->done = extractBool(object_start, object_end, "done", 0);
+    if (task->key[0] && task->label[0]) dashboard->task_count++;
     cursor = object_end + 1;
   }
-  return dashboard->people_count;
+}
+
+void parseNutrition(const char* nutrition_value, const char* nutrition_end, Dashboard* dashboard) {
+  dashboard->nutrition.week = extractInt(nutrition_value, nutrition_end, "week", 0);
+  extractString(nutrition_value, nutrition_end, "line1", dashboard->nutrition.line1, sizeof(dashboard->nutrition.line1), "");
+  extractString(nutrition_value, nutrition_end, "line2", dashboard->nutrition.line2, sizeof(dashboard->nutrition.line2), "");
+  extractString(nutrition_value, nutrition_end, "supplement1", dashboard->nutrition.supplement1, sizeof(dashboard->nutrition.supplement1), "");
+  extractString(nutrition_value, nutrition_end, "supplement2", dashboard->nutrition.supplement2, sizeof(dashboard->nutrition.supplement2), "");
+  dashboard->nutrition.configured = dashboard->nutrition.line1[0] != '\0';
 }
 
 void parsePregnancy(const char* pregnancy_value, const char* pregnancy_end, Dashboard* dashboard) {
@@ -620,54 +536,32 @@ void parsePregnancy(const char* pregnancy_value, const char* pregnancy_end, Dash
 
 int parseDashboard(const char* json, Dashboard* dashboard) {
   memset(dashboard, 0, sizeof(*dashboard));
-  copyText(dashboard->steps_unit, sizeof(dashboard->steps_unit), "steps");
-  copyText(dashboard->calories_unit, sizeof(dashboard->calories_unit), "kcal");
 
   if (!json || !extractBool(json, NULL, "ok", 0)) return 0;
   extractString(json, NULL, "generated_at", dashboard->generated_at, sizeof(dashboard->generated_at), "unknown");
   extractString(json, NULL, "version", dashboard->version, sizeof(dashboard->version), "");
-
-  // Phase 4: all flat parses are scoped to their object ranges — the payload
-  // now nests per-person keys (people[].steps etc.) that would otherwise be
-  // hijacked by whole-document first-match greps.
-  const char* health_value = findKeyInRange(json, NULL, "health");
-  const char* health_end = (health_value && *health_value == '{') ? matchingClose(health_value, '}') : NULL;
-  if (health_value && health_end) {
-    dashboard->steps = extractInt(health_value, health_end, "steps", 0);
-    dashboard->calories = extractInt(health_value, health_end, "calories", 0);
-    dashboard->protein_g = extractInt(health_value, health_end, "protein_g", 0);
-    dashboard->steps_target = extractInt(health_value, health_end, "steps_target", 10000);
-    dashboard->calories_target = extractInt(health_value, health_end, "calories_target", 2000);
-    extractString(health_value, health_end, "steps_unit", dashboard->steps_unit, sizeof(dashboard->steps_unit), "steps");
-    extractString(health_value, health_end, "calories_unit", dashboard->calories_unit, sizeof(dashboard->calories_unit), "kcal");
-    const char* people_value = findKeyInRange(health_value, health_end, "people");
-    if (people_value && *people_value == '[') {
-      const char* people_end = matchingClose(people_value, ']');
-      if (people_end && people_end <= health_end) {
-        parseHealthPeople(people_value, people_end, dashboard);
-      }
-    }
-  }
-
-  const char* challenge_value = findKeyInRange(json, NULL, "challenge");
-  const char* challenge_end = (challenge_value && *challenge_value == '{') ? matchingClose(challenge_value, '}') : NULL;
-  if (challenge_value && challenge_end) {
-    dashboard->challenge_day = extractInt(challenge_value, challenge_end, "day", 1);
-    if (dashboard->challenge_day < 1) dashboard->challenge_day = 1;
-    if (dashboard->challenge_day > 75) dashboard->challenge_day = 75;
-    dashboard->water_tenths = extractScaledInt(challenge_value, challenge_end, "water_l", 10, 0);
-    dashboard->water_target_tenths = extractScaledInt(challenge_value, challenge_end, "water_target_l", 10, 30);
-    dashboard->sleep_tenths = extractScaledInt(challenge_value, challenge_end, "sleep_hours", 10, 0);
-    dashboard->sleep_target_tenths = extractScaledInt(challenge_value, challenge_end, "sleep_target_hours", 10, 80);
-    dashboard->workouts = extractInt(challenge_value, challenge_end, "workouts", 0);
-    dashboard->workout_target = extractInt(challenge_value, challenge_end, "workout_target", 2);
-  }
 
   const char* pregnancy_value = findKeyInRange(json, NULL, "pregnancy");
   if (pregnancy_value && *pregnancy_value == '{') {
     const char* pregnancy_end = matchingClose(pregnancy_value, '}');
     if (pregnancy_end) {
       parsePregnancy(pregnancy_value, pregnancy_end, dashboard);
+    }
+  }
+
+  const char* tasks_value = findKeyInRange(json, NULL, "tasks");
+  if (tasks_value && *tasks_value == '[') {
+    const char* tasks_end = matchingClose(tasks_value, ']');
+    if (tasks_end) {
+      parsePregnancyTasks(tasks_value, tasks_end, dashboard);
+    }
+  }
+
+  const char* nutrition_value = findKeyInRange(json, NULL, "nutrition");
+  if (nutrition_value && *nutrition_value == '{') {
+    const char* nutrition_end = matchingClose(nutrition_value, '}');
+    if (nutrition_end) {
+      parseNutrition(nutrition_value, nutrition_end, dashboard);
     }
   }
 
@@ -871,9 +765,22 @@ int renderLines(const Dashboard* dashboard, const char* status, char lines[][96]
   snprintf(mode, sizeof(mode), " Mode %s | refresh 15m", status);
   addCardText(lines, &count, mode);
   addRule(lines, &count);
-  addSectionTitle(lines, &count, "Health");
-  addMetric(lines, &count, "STEPS", dashboard->steps, dashboard->steps_target, dashboard->steps_unit);
-  addMetric(lines, &count, "CAL", dashboard->calories, dashboard->calories_target, dashboard->calories_unit);
+  addSectionTitle(lines, &count, "Pregnancy");
+  char pregnancy_line[96];
+  if (dashboard->pregnancy.configured) {
+    snprintf(pregnancy_line, sizeof(pregnancy_line), " Week %d (+%d days) | %d tasks open",
+             dashboard->pregnancy.weeks, dashboard->pregnancy.days_to_go, dashboard->task_count);
+  } else {
+    snprintf(pregnancy_line, sizeof(pregnancy_line), " Due date not set");
+  }
+  addCardText(lines, &count, pregnancy_line);
+  addRule(lines, &count);
+  for (int i = 0; i < dashboard->task_count; i++) {
+    char task_line[128];
+    snprintf(task_line, sizeof(task_line), " %s W%d %s", dashboard->tasks[i].done ? "[x]" : "[ ]",
+             dashboard->tasks[i].due_week, dashboard->tasks[i].label);
+    addCardText(lines, &count, task_line);
+  }
   addRule(lines, &count);
   for (int i = 0; i < dashboard->list_count; i++) addList(lines, &count, &dashboard->lists[i]);
   addCardText(lines, &count, " Telegram updates lists");
@@ -1283,53 +1190,6 @@ void drawRadialMetricTenths(Canvas* canvas, int x, int y, int w, int h, const ch
   drawTextCentered(canvas, cx, y + h - 38, w - 18, metric, metric_scale, 0);
 }
 
-void drawChallengeStreakCard(Canvas* canvas, int x, int y, int w, int h, int current_day) {
-  strokeRect(canvas, x, y, w, h, 3, 0);
-  const int title_scale = textWidth("STREAK", 4) <= w - 24 ? 4 : 3;
-  drawTextCentered(canvas, x + w / 2, y + 20, w - 24, "STREAK", title_scale, 0);
-  line(canvas, x + 14, y + 62, x + w - 14, y + 62, 2, 0);
-
-  char day_text[32];
-  snprintf(day_text, sizeof(day_text), "%d / 75", current_day);
-  drawTextCentered(canvas, x + w / 2, y + 84, w - 24, day_text, 3, 0);
-
-  const int columns = 5;
-  const int rows = 15;
-  const int min_gap = 3;
-  const int max_grid_w = w - 24;
-  const int max_grid_h = h - 172;
-  int square = (max_grid_h - (rows - 1) * min_gap) / rows;
-  const int square_by_w = max_grid_w / columns;
-  if (square > square_by_w) square = square_by_w;
-  if (square > 7) square -= 3;
-  else if (square > 5) square -= 2;
-  if (square < 4) square = 4;
-  int gap_x = columns > 1 ? (max_grid_w - columns * square) / (columns - 1) : 0;
-  if (gap_x < min_gap) gap_x = min_gap;
-  const int gap_y = min_gap;
-  const int grid_h = rows * square + (rows - 1) * gap_y;
-  const int grid_x = x + 12;
-  const int grid_y = y + 132 + (max_grid_h - grid_h) / 2;
-  const int clamped_day = current_day < 1 ? 1 : (current_day > 75 ? 75 : current_day);
-
-  for (int day = 1; day <= 75; day++) {
-    const int index = day - 1;
-    const int column = index % columns;
-    const int row = index / columns;
-    const int cell_x = grid_x + column * (square + gap_x);
-    const int cell_y = grid_y + row * (square + gap_y);
-    const int completed = day <= clamped_day;
-    const int current = day == clamped_day;
-    if (completed) {
-      fillRect(canvas, cell_x, cell_y, square, square, 0);
-    } else {
-      fillRect(canvas, cell_x, cell_y, square, square, current ? 212 : 244);
-      strokeRect(canvas, cell_x, cell_y, square, square, current ? 2 : 1, 0);
-    }
-  }
-
-  drawTextCentered(canvas, x + w / 2, y + h - 38, w - 24, "75 MEDIUM", 2, 0);
-}
 
 void formatCalendarEventRow(const CalendarEvent* event, char* out, size_t size) {
   static const char* months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
@@ -1692,44 +1552,6 @@ void drawFullListDashboard(Canvas* canvas, const Dashboard* dashboard, int list_
   }
 }
 
-void drawChallengeDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
-
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "75 DAY CHALLENGE");
-  char day_text[40];
-  snprintf(day_text, sizeof(day_text), "DAY %d // CURRENT DAY", dashboard->challenge_day);
-  drawTextClipped(canvas, shell_x + 36, sub_y + 88, shell_w - 72, day_text, 3, 0);
-
-  const int gap = 10;
-  const int content_x = shell_x + 18;
-  const int content_y = sub_y + 132;
-  const int content_w = shell_w - 36;
-  const int content_h = shell_y + shell_h - content_y - 18;
-  const int center_w = (content_w - gap * 2) / 4;
-  const int side_w = (content_w - center_w - gap * 2) / 2;
-  const int left_x = content_x;
-  const int center_x = left_x + side_w + gap;
-  const int right_x = center_x + center_w + gap;
-  const int card_h = (content_h - gap * 2) / 3;
-
-  drawRadialMetric(canvas, left_x, content_y, side_w, card_h, "PROTEIN", dashboard->protein_g, 100, "g");
-  drawRadialMetricTenths(canvas, left_x, content_y + card_h + gap, side_w, card_h, "WATER", dashboard->water_tenths, dashboard->water_target_tenths, "L");
-  drawRadialMetricTenths(canvas, left_x, content_y + (card_h + gap) * 2, side_w, card_h, "SLEEP", dashboard->sleep_tenths, dashboard->sleep_target_tenths, "h");
-  drawChallengeStreakCard(canvas, center_x, content_y, center_w, content_h, dashboard->challenge_day);
-  drawRadialMetric(canvas, right_x, content_y, side_w, card_h, "WORKOUT", dashboard->workouts, dashboard->workout_target, "done");
-  drawRadialMetric(canvas, right_x, content_y + card_h + gap, side_w, card_h, "STEPS", dashboard->steps, dashboard->steps_target, dashboard->steps_unit);
-  drawRadialMetric(canvas, right_x, content_y + (card_h + gap) * 2, side_w, card_h, "CALORIES", dashboard->calories, dashboard->calories_target, dashboard->calories_unit);
-}
 
 void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
   clearCanvas(canvas, 255);
@@ -1782,8 +1604,6 @@ void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const
     for (int i = 0; i < shown; i++) {
       const int row_y = first_y + i * (row_h + row_gap);
       strokeRect(canvas, row_x, row_y, row_w, row_h, 2, 0);
-      Rect row_rect = {row_x, row_y, row_w, row_h};
-      addTouchRegion(row_rect, kTouchHealthForDate, feed->events[i].date_offset, -1, "", 0);
       char row[160];
       formatCalendarEventRow(&feed->events[i], row, sizeof(row));
       drawTextClipped(canvas, row_x + 18, row_y + 18, row_w - 36, row, 3, 0);
@@ -1826,8 +1646,6 @@ void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const
     for (int i = 0; i < shown; i++) {
       const int row_y = section_y + i * (row_h + row_gap);
       strokeRect(canvas, row_x, row_y, row_w, row_h, 2, 0);
-      Rect row_rect = {row_x, row_y, row_w, row_h};
-      addTouchRegion(row_rect, kTouchHealthForDate, feed->events[i].date_offset, -1, "", 0);
       char row[160];
       formatCalendarEventRow(&feed->events[i], row, sizeof(row));
       drawTextClipped(canvas, row_x + 18, row_y + 18, row_w - 36, row, 3, 0);
@@ -1848,219 +1666,10 @@ void drawFullCalendarDashboard(Canvas* canvas, const Dashboard* dashboard, const
 
 // 24-bar hourly chart for the drill-down overlay. metric: 0 steps, 1 sleep
 // timeline, 2 exercise minutes, 3 heart rate.
-void drawHourlyChart(Canvas* canvas, int x, int y, int w, int h, const HealthPerson* person, int metric) {
-  strokeRect(canvas, x, y, w, h, 2, 0);
-  const int plot_top = y + 40;
-  const int axis_y = y + h - 44;
-  const int plot_h = axis_y - plot_top;
-  const int slot_w = (w - 24) / 24;
-  int max_value = 1;
-  for (int i = 0; i < person->hourly_count && i < kMaxHourly; i++) {
-    int value = 0;
-    if (metric == 0) value = person->hourly_steps[i];
-    else if (metric == 2) value = person->hourly_exercise[i];
-    else if (metric == 3) value = person->hourly_hr[i];
-    if (value > max_value) max_value = value;
-  }
-
-  if (metric == 1) {
-    // Sleep timeline: filled block = asleep, outlined = awake, blank = no data.
-    for (int i = 0; i < kMaxHourly; i++) {
-      const int bx = x + 12 + i * slot_w;
-      const int state = i < person->hourly_count ? person->hourly_sleep[i] : 0;
-      if (state == 2) fillRect(canvas, bx + 1, plot_top, slot_w - 2, plot_h, 0);
-      else if (state == 1) strokeRect(canvas, bx + 1, plot_top, slot_w - 2, plot_h, 1, 0);
-    }
-  } else {
-    for (int i = 0; i < kMaxHourly; i++) {
-      int value = 0;
-      if (metric == 0) value = i < person->hourly_count ? person->hourly_steps[i] : 0;
-      else if (metric == 2) value = i < person->hourly_count ? person->hourly_exercise[i] : 0;
-      else if (metric == 3) value = i < person->hourly_count ? person->hourly_hr[i] : 0;
-      if (value <= 0) continue;
-      int bar_h = (value * plot_h) / max_value;
-      if (bar_h < 2) bar_h = 2;
-      fillRect(canvas, x + 12 + i * slot_w + 1, axis_y - bar_h, slot_w - 2, bar_h, 0);
-    }
-  }
-  line(canvas, x + 10, axis_y, x + w - 10, axis_y, 2, 0);
-  for (int hour = 0; hour <= 18; hour += 6) {
-    char label[8];
-    snprintf(label, sizeof(label), "%d", hour);
-    drawTextCentered(canvas, x + 12 + hour * slot_w + slot_w / 2, axis_y + 8, 60, label, 2, 0);
-  }
-  char peak_label[40];
-  if (metric == 0) snprintf(peak_label, sizeof(peak_label), "MAX %d STEPS", max_value);
-  else if (metric == 2) snprintf(peak_label, sizeof(peak_label), "MAX %d MIN", max_value);
-  else if (metric == 3) snprintf(peak_label, sizeof(peak_label), "MAX %d BPM", max_value);
-  else snprintf(peak_label, sizeof(peak_label), "24H TIMELINE");
-  drawTextClipped(canvas, x + 14, y + 10, w - 28, peak_label, 2, 0);
-}
 
 // Tile drill-down overlay: full screen, BACK closes. The heart metric also
 // lists the daily cardio rows beneath the chart.
-void drawHealthHourOverlay(Canvas* canvas, const Dashboard* dashboard, const char* status) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
 
-  const HealthPerson* person = &dashboard->people[g_health_hour_person];
-  char sub_title[48];
-  const char* metric_name = g_health_hour_metric == 0 ? "STEPS"
-                          : g_health_hour_metric == 1 ? "SLEEP"
-                          : g_health_hour_metric == 2 ? "EXERCISE"
-                          : "HEART";
-  snprintf(sub_title, sizeof(sub_title), "%s - %s TODAY", person->label, metric_name);
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, sub_title);
-
-  const int chart_y = sub_y + 96;
-  const int chart_h = g_health_hour_metric == 3
-    ? (shell_h - (chart_y - shell_y)) / 2
-    : shell_h - (chart_y - shell_y) - 40;
-  drawHourlyChart(canvas, shell_x + 18, chart_y, shell_w - 36, chart_h, person, g_health_hour_metric);
-
-  if (g_health_hour_metric == 3) {
-    // Daily cardio rows under the chart (dash when no sample yet).
-    const int row_x = shell_x + 18;
-    const int row_w = shell_w - 36;
-    const int row_y = chart_y + chart_h + 16;
-    const int row_h = 52;
-    const char* row_labels[3] = {"HRV SDNN", "RESPIRATORY", "VO2 MAX"};
-    const int row_tenths[3] = {person->hrv_tenths, person->resp_tenths, person->vo2_tenths};
-    const char* row_units[3] = {"MS", "/MIN", "ML/KG/MIN"};
-    for (int i = 0; i < 3; i++) {
-      const int y = row_y + i * (row_h + 8);
-      strokeRect(canvas, row_x, y, row_w, row_h, 2, 0);
-      drawTextClipped(canvas, row_x + 18, y + 14, 300, row_labels[i], 3, 0);
-      char value_text[40];
-      if (row_tenths[i] > 0) {
-        char value[24];
-        formatTenths(row_tenths[i], value, sizeof(value));
-        snprintf(value_text, sizeof(value_text), "%s %s", value, row_units[i]);
-      } else {
-        snprintf(value_text, sizeof(value_text), "--");
-      }
-      drawTextClipped(canvas, row_x + 340, y + 14, row_w - 358, value_text, 3, 0);
-    }
-  }
-}
-
-void drawHealthDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
-  clearCanvas(canvas, 255);
-  clearTouchRegions();
-  g_last_screen_width = canvas->width;
-  g_last_screen_height = canvas->height;
-  const int shell_w = canvas->width;
-  const int shell_x = 0;
-  const int shell_y = kKindleStatusBarHeight;
-  const int shell_h = canvas->height - shell_y;
-  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
-  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
-
-  const int sub_y = shell_y + 10 + 132 + 8;
-  drawSubHeader(canvas, shell_x, sub_y, shell_w, "HEALTH");
-
-  // Quick day buttons (TODAY lives in the header arrows): YDA = -1, 2D = -2.
-  const int quick_y = sub_y + 18;
-  const int quick_w = 96;
-  const int quick_h = 44;
-  const int yda_x = shell_x + shell_w / 2 - quick_w - 12;
-  const int two_x = shell_x + shell_w / 2 + 12;
-  strokeRect(canvas, yda_x, quick_y, quick_w, quick_h, 2, 0);
-  drawTextCentered(canvas, yda_x + quick_w / 2, quick_y + 10, quick_w - 8, "YDA", 3, 0);
-  addTouchRegion(Rect{yda_x, quick_y, quick_w, quick_h}, kTouchSetDayOffset, -1, -1, "", 0);
-  strokeRect(canvas, two_x, quick_y, quick_w, quick_h, 2, 0);
-  drawTextCentered(canvas, two_x + quick_w / 2, quick_y + 10, quick_w - 8, "2D", 3, 0);
-  addTouchRegion(Rect{two_x, quick_y, quick_w, quick_h}, kTouchSetDayOffset, -2, -1, "", 0);
-
-  const int content_y = sub_y + 80 + 16;
-  const int content_bottom = shell_y + shell_h - 24;
-  const int col_w = (shell_w - 36 - 10) / 2;
-  const int left_x = shell_x + 18;
-  const int right_x = left_x + col_w + 10;
-  const int band_h = 56;
-  const int strip_h = 44;
-  const int strip_y = content_y + band_h + 8;
-  const int grid_y = strip_y + strip_h + 12;
-  const int tile_w = (col_w - 10) / 2;
-  const int bottom_y = content_bottom - 140;
-  const int tile_h = (bottom_y - 12 - grid_y - 10) / 2;
-
-  for (int p = 0; p < kMaxHealthPeople; p++) {
-    const int col_x = p == 0 ? left_x : right_x;
-    if (p >= dashboard->people_count) {
-      drawTextCentered(canvas, col_x + col_w / 2, content_y + 60, col_w, "NO DATA", 4, 0);
-      continue;
-    }
-    const HealthPerson* person = &dashboard->people[p];
-
-    // Name band
-    char label_upper[24];
-    upperCopy(label_upper, sizeof(label_upper), person->label);
-    drawTextClipped(canvas, col_x + 4, content_y + 8, col_w - 8, label_upper, 4, 0);
-    line(canvas, col_x, content_y + band_h - 10, col_x + col_w, content_y + band_h - 10, 2, 0);
-
-    // Summary verdict strip
-    char strip[80];
-    char marks[16];
-    snprintf(marks, sizeof(marks), "S%c E%c L%c",
-             person->steps_hit ? '+' : '-', person->exercise_hit ? '+' : '-', person->sleep_hit ? '+' : '-');
-    if (person->rest_hint) snprintf(strip, sizeof(strip), "%s %d%%  %s  REST", person->verdict, person->score, marks);
-    else snprintf(strip, sizeof(strip), "%s %d%%  %s", person->verdict, person->score, marks);
-    drawTextClipped(canvas, col_x + 4, strip_y, col_w - 8, strip, 2, 0);
-
-    // Tiles: steps | sleep / exercise | resting heart (all tap for hourly)
-    const int t1x = col_x;
-    const int t2x = col_x + tile_w + 10;
-    const int row1_y = grid_y;
-    const int row2_y = grid_y + tile_h + 10;
-    drawRadialMetric(canvas, t1x, row1_y, tile_w, tile_h, "STEPS", person->steps, person->steps_target, person->steps_unit);
-    drawRadialMetricTenths(canvas, t2x, row1_y, tile_w, tile_h, "SLEEP", person->sleep_tenths, person->sleep_target_tenths, "h");
-    drawRadialMetric(canvas, t1x, row2_y, tile_w, tile_h, "EXERCISE", person->exercise_minutes, person->exercise_target, "min");
-    strokeRect(canvas, t2x, row2_y, tile_w, tile_h, 2, 0);
-    addTouchRegion(Rect{t1x, row1_y, tile_w, tile_h}, kTouchOpenHealthTile, p, 0, "", 0);
-    addTouchRegion(Rect{t2x, row1_y, tile_w, tile_h}, kTouchOpenHealthTile, p, 1, "", 0);
-    addTouchRegion(Rect{t1x, row2_y, tile_w, tile_h}, kTouchOpenHealthTile, p, 2, "", 0);
-    addTouchRegion(Rect{t2x, row2_y, tile_w, tile_h}, kTouchOpenHealthTile, p, 3, "", 0);
-    if (person->resting_hr > 0) {
-      char hr_value[24];
-      formatNumber(person->resting_hr, hr_value, sizeof(hr_value));
-      drawTextCentered(canvas, t2x + tile_w / 2, row2_y + tile_h / 2 - 24, tile_w - 16, hr_value, 5, 0);
-    } else {
-      drawTextCentered(canvas, t2x + tile_w / 2, row2_y + tile_h / 2 - 24, tile_w - 16, "--", 5, 0);
-    }
-    drawTextCentered(canvas, t2x + tile_w / 2, row2_y + tile_h / 2 + 40, tile_w - 16, "BPM RESTING HR", 2, 0);
-
-    // Bottom strip: Keethu gets the pregnancy tile, Dinesh the sync strip.
-    if (p == 1) {
-      strokeRect(canvas, col_x, bottom_y, col_w, 140, 2, 0);
-      addTouchRegion(Rect{col_x, bottom_y, col_w, 140}, kTouchOpenPregnancy, -1, -1, "", 0);
-      if (dashboard->pregnancy.configured) {
-        char pregnancy_line[80];
-        snprintf(pregnancy_line, sizeof(pregnancy_line), "WEEK %d - %d TO GO", dashboard->pregnancy.weeks, dashboard->pregnancy.days_to_go > 0 ? dashboard->pregnancy.days_to_go : 0);
-        drawTextClipped(canvas, col_x + 14, bottom_y + 12, col_w - 28, "PREGNANCY // TAP TO OPEN", 2, 0);
-        drawTextCentered(canvas, col_x + col_w / 2, bottom_y + 52, col_w - 28, pregnancy_line, 4, 0);
-      } else {
-        drawTextCentered(canvas, col_x + col_w / 2, bottom_y + 50, col_w - 28, "DUE DATE NOT SET", 3, 0);
-      }
-    } else {
-      strokeRect(canvas, col_x, bottom_y, col_w, 140, 2, 0);
-      if (person->synced_hm[0]) {
-        char sync_line[60];
-        snprintf(sync_line, sizeof(sync_line), "APPLE HEALTH // SYNCED %s", person->synced_hm);
-        drawTextClipped(canvas, col_x + 14, bottom_y + 56, col_w - 28, sync_line, 2, 0);
-      }
-    }
-  }
-}
 
 void drawPregnancyDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
   clearCanvas(canvas, 255);
@@ -2106,39 +1715,103 @@ void drawPregnancyDashboard(Canvas* canvas, const Dashboard* dashboard, const ch
   else snprintf(countdown_line, sizeof(countdown_line), "DUE +%d DAYS", -dashboard->pregnancy.days_to_go);
   drawTextCentered(canvas, shell_x + shell_w / 2, card_y + 306, card_w - 24, countdown_line, 4, 0);
 
+  // Nutrition this week (from payload)
+  if (dashboard->nutrition.line1[0]) {
+    const int strip_x = shell_x + 18;
+    const int strip_y = card_y + card_h + 16;
+    const int strip_w = shell_w - 36;
+    strokeRect(canvas, strip_x, strip_y, strip_w, 96, 2, 0);
+    drawTextClipped(canvas, strip_x + 14, strip_y + 10, strip_w - 28, "NUTRITION THIS WEEK", 2, 0);
+    drawTextClipped(canvas, strip_x + 14, strip_y + 36, strip_w - 28, dashboard->nutrition.line1, 3, 0);
+    drawTextClipped(canvas, strip_x + 14, strip_y + 64, strip_w - 28, dashboard->nutrition.line2, 3, 0);
+    // supplements live in the payload too — rendered on the timeline screen
+  }
+
+  // DO NOW: open tasks due at/before the current week
+  {
+    const int now_x = shell_x + 18;
+    const int now_y = card_y + card_h + 120;
+    const int now_w = shell_w - 36;
+    int open_count = 0;
+    for (int i = 0; i < dashboard->task_count; i++) {
+      if (!dashboard->tasks[i].done && dashboard->tasks[i].due_week <= dashboard->pregnancy.weeks) open_count++;
+    }
+    drawTextClipped(canvas, now_x, now_y, now_w, open_count > 0 ? "DO NOW" : "ALL TASKS DONE", 3, 0);
+    int shown = 0;
+    for (int i = 0; i < dashboard->task_count && shown < 3; i++) {
+      const PregnancyTask* task = &dashboard->tasks[i];
+      if (task->done || task->due_week > dashboard->pregnancy.weeks) continue;
+      const int ry = now_y + 34 + shown * 52;
+      strokeRect(canvas, now_x, ry, now_w, 48, 2, 0);
+      char row_text[96];
+      if (task->due_week <= dashboard->pregnancy.weeks && task->due_week < dashboard->pregnancy.weeks) {
+        snprintf(row_text, sizeof(row_text), "OVERDUE W%d - %.52s", task->due_week, task->label);
+      } else {
+        snprintf(row_text, sizeof(row_text), "W%d - %.60s", task->due_week, task->label);
+      }
+      drawTextClipped(canvas, now_x + 14, ry + 12, now_w - 28, row_text, 3, 0);
+      shown++;
+    }
+    if (open_count > shown) {
+      char more[48];
+      snprintf(more, sizeof(more), "+%d MORE ON THE TIMELINE", open_count - shown);
+      drawTextClipped(canvas, now_x + 14, now_y + 34 + shown * 52 + 8, now_w - 28, more, 2, 0);
+    }
+  }
+}
+
+// Phase 4: full care timeline — every seeded task by due week with done state.
+void drawCareTimelineDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
+  clearCanvas(canvas, 255);
+  clearTouchRegions();
+  g_last_screen_width = canvas->width;
+  g_last_screen_height = canvas->height;
+  const int shell_w = canvas->width;
+  const int shell_x = 0;
+  const int shell_y = kKindleStatusBarHeight;
+  const int shell_h = canvas->height - shell_y;
+  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
+  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
+
+  const int sub_y = shell_y + 10 + 132 + 8;
+  drawSubHeader(canvas, shell_x, sub_y, shell_w, "CARE TIMELINE");
+
   const int row_x = shell_x + 18;
   const int row_w = shell_w - 36;
-  const int row_y = card_y + card_h + 20;
-  const int row_h = 68;
+  const int row_y = sub_y + 96;
+  const int row_h = 56;
   const int row_gap = 6;
-  for (int i = 0; i < dashboard->pregnancy.milestone_count; i++) {
-    const PregnancyMilestone* milestone = &dashboard->pregnancy.milestones[i];
-    const int y = row_y + i * (row_h + row_gap);
-    if (y + row_h > shell_y + shell_h - 24) break;
+  const int bottom = shell_y + shell_h - 24;
+  int done_count = 0;
+  for (int i = 0; i < dashboard->task_count; i++) {
+    if (dashboard->tasks[i].done) done_count++;
+  }
+  char summary[64];
+  snprintf(summary, sizeof(summary), "%d OF %d DONE", done_count, dashboard->task_count);
+  drawTextClipped(canvas, row_x + 4, sub_y + 62, row_w, summary, 2, 0);
+
+  int y = row_y;
+  for (int i = 0; i < dashboard->task_count; i++) {
+    const PregnancyTask* task = &dashboard->tasks[i];
+    if (y + row_h > shell_y + shell_h - 20) break;
     strokeRect(canvas, row_x, y, row_w, row_h, 2, 0);
     char badge[16];
-    snprintf(badge, sizeof(badge), "%dW", milestone->week);
-    drawTextClipped(canvas, row_x + 16, y + 20, 110, badge, 3, 0);
-    char label_upper[48];
-    upperCopy(label_upper, sizeof(label_upper), milestone->label);
-    if (milestone->done) {
-      drawTextClipped(canvas, row_x + 140, y + 20, 520, label_upper, 3, 0);
-      line(canvas, row_x + 136, y + 36, row_x + 136 + 300, y + 36, 2, 0);
+    snprintf(badge, sizeof(badge), "W%d", task->due_week);
+    drawTextClipped(canvas, row_x + 14, y + 16, 90, badge, 3, 0);
+    char label_upper[64];
+    upperCopy(label_upper, sizeof(label_upper), task->label);
+    if (task->done) {
+      drawTextClipped(canvas, row_x + 110, y + 16, row_w - 220, label_upper, 3, 0);
+      line(canvas, row_x + 106, y + 32, row_x + row_w - 130, y + 32, 2, 0);
     } else {
-      drawTextClipped(canvas, row_x + 140, y + 20, 520, label_upper, 3, 0);
+      drawTextClipped(canvas, row_x + 110, y + 16, row_w - 220, label_upper, 3, 0);
     }
-    char marker[8];
-    snprintf(marker, sizeof(marker), "%s", milestone->done ? "[X]" : "[ ]");
-    drawTextClipped(canvas, row_x + row_w - 300, y + 20, 120, marker, 3, 0);
-    drawTextClipped(canvas, row_x + row_w - 250, y + 20, 234, milestone->date_display, 3, 0);
+    drawTextClipped(canvas, row_x + row_w - 110, y + 16, 96, task->done ? "[X]" : "[ ]", 3, 0);
+    y += row_h + row_gap;
   }
 }
 
 void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
-  if (g_active_challenge) {
-    drawChallengeDashboard(canvas, dashboard, status);
-    return;
-  }
   if (g_active_calendar) {
     drawFullCalendarDashboard(canvas, dashboard, status);
     return;
@@ -2147,13 +1820,9 @@ void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char
     drawFullListDashboard(canvas, dashboard, g_active_list, status);
     return;
   }
-  if (g_health_hour_person >= 0 && g_health_hour_person < dashboard->people_count) {
-    drawHealthHourOverlay(canvas, dashboard, status);
-    return;
-  }
   switch (g_active_screen) {
-    case 1: drawHealthDashboard(canvas, dashboard, status); return;
-    case 2: drawPregnancyDashboard(canvas, dashboard, status); return;
+    case 1: drawPregnancyDashboard(canvas, dashboard, status); return;
+    case 2: drawCareTimelineDashboard(canvas, dashboard, status); return;
     default: drawBitmapDashboard(canvas, dashboard, status);
   }
 }
@@ -3030,12 +2699,7 @@ int handlePendingTouch(const Options* options) {
 
   if (action == kTouchBack) {
     fprintf(stderr, "touch=back\n");
-    if (g_health_hour_person >= 0) {
-      g_health_hour_person = -1;
-      g_health_hour_metric = -1;
-    } else if (g_active_challenge) {
-      g_active_challenge = 0;
-    } else if (g_active_calendar) {
+    if (g_active_calendar) {
       g_active_calendar = 0;
       g_active_calendar_feed = -1;
     } else if (g_active_list >= 0) {
@@ -3049,11 +2713,8 @@ int handlePendingTouch(const Options* options) {
   if (action == kTouchHome) {
     fprintf(stderr, "touch=home\n");
     g_active_list = -1;
-    g_active_challenge = 0;
     g_active_calendar = 0;
     g_active_calendar_feed = -1;
-    g_health_hour_person = -1;
-    g_health_hour_metric = -1;
     g_active_screen = 0;
     return 1;
   }
@@ -3061,7 +2722,7 @@ int handlePendingTouch(const Options* options) {
   // Phase 4: swipes flip screens 1<->2<->3, but only with no overlay open.
   if (action == kTouchScreenNext || action == kTouchScreenPrev) {
     fprintf(stderr, "touch=screen dir=%s\n", action == kTouchScreenNext ? "next" : "prev");
-    if (g_active_challenge || g_active_calendar || g_active_list >= 0 || g_health_hour_person >= 0) {
+    if (g_active_calendar || g_active_list >= 0) {
       return 0;
     }
     const int next = action == kTouchScreenNext ? g_active_screen + 1 : g_active_screen - 1;
@@ -3070,58 +2731,22 @@ int handlePendingTouch(const Options* options) {
     return 1;
   }
 
-  if (action == kTouchOpenHealthTile) {
-    fprintf(stderr, "touch=health-tile person=%d metric=%d\n", g_pending_list_index, g_pending_item_index);
-    g_health_hour_person = g_pending_list_index >= 0 && g_pending_list_index < 2 ? g_pending_list_index : 0;
-    g_health_hour_metric = g_pending_item_index;
-    return 1;
-  }
-
   if (action == kTouchOpenPregnancy) {
     fprintf(stderr, "touch=open-pregnancy\n");
-    g_active_screen = 2;
-    return 1;
-  }
-
-  // Absolute day jump (quick buttons YDA/2D, calendar event rows): offset rides
-  // g_pending_list_index, then a refetch pulls that date's payload.
-  if (action == kTouchSetDayOffset || action == kTouchHealthForDate) {
-    fprintf(stderr, "touch=day-offset action=%d offset=%d\n", static_cast<int>(action), g_pending_list_index);
-    g_active_list = -1;
-    g_active_challenge = 0;
-    g_active_calendar = 0;
-    g_active_calendar_feed = -1;
-    g_health_hour_person = -1;
-    g_health_hour_metric = -1;
     g_active_screen = 1;
-    g_day_offset = g_pending_list_index;
-    g_manual_fetch_refresh = 1;
-    g_event_refresh = 1;
-    return 2;
+    return 1;
   }
 
   if (action == kTouchOpenList) {
     fprintf(stderr, "touch=open-list index=%d\n", g_pending_list_index);
-    g_active_challenge = 0;
     g_active_calendar = 0;
-    g_active_calendar_feed = -1;
     g_active_list = g_pending_list_index;
-    return 1;
-  }
-
-  if (action == kTouchOpenChallenge) {
-    fprintf(stderr, "touch=open-challenge\n");
-    g_active_list = -1;
-    g_active_calendar = 0;
-    g_active_calendar_feed = -1;
-    g_active_challenge = 1;
     return 1;
   }
 
   if (action == kTouchOpenCalendar) {
     fprintf(stderr, "touch=open-calendar feed=%d\n", g_pending_list_index);
     g_active_list = -1;
-    g_active_challenge = 0;
     g_active_calendar = 1;
     g_active_calendar_feed = g_pending_list_index;
     return 1;
@@ -3450,14 +3075,10 @@ void handleSignal(int) {
 void applyInitialView(const char* view) {
   if (!view || !view[0]) return;
   g_active_list = -1;
-  g_active_challenge = 0;
   g_active_calendar = 0;
   g_active_calendar_feed = -1;
   g_active_screen = 0;
-  g_health_hour_person = -1;
-  g_health_hour_metric = -1;
-  if (strcmp(view, "challenge") == 0) g_active_challenge = 1;
-  else if (strcmp(view, "calendar") == 0) {
+  if (strcmp(view, "calendar") == 0) {
     g_active_calendar = 1;
   } else if (strcmp(view, "chores") == 0) {
     g_active_list = 0;
@@ -3465,19 +3086,10 @@ void applyInitialView(const char* view) {
     g_active_list = 1;
   } else if (strcmp(view, "grocery") == 0) {
     g_active_list = 2;
-  } else if (strcmp(view, "health") == 0) {
-    g_active_screen = 1;
   } else if (strcmp(view, "pregnancy") == 0) {
-    g_active_screen = 2;
-  } else if (strncmp(view, "health-", 7) == 0) {
-    // Render presets for the hourly drill-down fixtures/tests.
     g_active_screen = 1;
-    g_health_hour_person = 0;
-    if (strcmp(view, "health-steps") == 0) g_health_hour_metric = 0;
-    else if (strcmp(view, "health-sleep") == 0) g_health_hour_metric = 1;
-    else if (strcmp(view, "health-exercise") == 0) g_health_hour_metric = 2;
-    else if (strcmp(view, "health-hr") == 0) g_health_hour_metric = 3;
-    else { g_health_hour_person = -1; g_health_hour_metric = -1; g_active_screen = 1; }
+  } else if (strcmp(view, "timeline") == 0) {
+    g_active_screen = 2;
   }
 }
 

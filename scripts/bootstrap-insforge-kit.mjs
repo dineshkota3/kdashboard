@@ -13,7 +13,8 @@ const schemaMigrations = [
   "migrations/20261011010000_create-calendar-reminders.sql",
   "migrations/20261011020000_add-planner-store.sql",
   "migrations/20261017000000_health-new-metrics.sql",
-  "migrations/20261017010000_health-targets-per-person.sql"
+  "migrations/20261017010000_health-targets-per-person.sql",
+  "migrations/20261017020000_pregnancy-tasks.sql"
 ];
 
 const sampleDataMigrations = [];
@@ -23,7 +24,6 @@ const functions = [
   ["kindle-dashboard-events", "functions/kindle-dashboard-events.ts", "Kindle Dashboard Events"],
   ["kindle-dashboard-toggle", "functions/kindle-dashboard-toggle.ts", "Kindle Dashboard Toggle"],
   ["telegram-webhook", "functions/telegram-webhook.ts", "Telegram Planner Webhook"],
-  ["health-sync", "functions/health-sync.ts", "Health Sync"],
   ["planner-cleanup", "functions/planner-cleanup.ts", "Planner Cleanup"],
   ["google-calendar-oauth", "functions/google-calendar-oauth.ts", "Google Calendar OAuth"],
   ["calendar-reminders", "functions/calendar-reminders.ts", "Calendar Reminders"]
