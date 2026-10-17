@@ -396,6 +396,24 @@ Edit `Config/LocalConfig.xcconfig` so `HEALTH_SYNC_TOKEN` matches the InsForge
 secret. Open `HealthSyncCompanion.xcodeproj` in Xcode and run it on a real
 iPhone; HealthKit data is not meaningfully testable in the simulator.
 
+### Second Person's Health Sync
+
+A second person (e.g. a partner) can sync their Apple Health to the same dashboard:
+
+1. Build the same `HealthSyncCompanion` app on their iPhone (own Xcode signing session).
+2. In their `Config/LocalConfig.xcconfig`, use the same `INSFORGE_HEALTH_SYNC_URL` and
+   `HEALTH_SYNC_TOKEN`, but set their own source:
+   `HEALTH_SYNC_SOURCE = apple_health_ios_keethu` (use their name; the owner's phone
+   leaves the key unset).
+3. Grant Health read permissions when prompted (include Sleep, Heart rate, HRV,
+   Respiratory rate, VO₂max, Exercise — Apple Watch data flows through the paired
+   iPhone automatically).
+4. After their first manual Sync, verify rows land under their source — a wrong
+   source would overwrite the owner's rows.
+
+The Kindle health screen shows one column per synced person, and per-person
+targets can be set from Telegram (`set steps target for keethu to 6000`).
+
 ## Updating Later
 
 When you pull a new version:

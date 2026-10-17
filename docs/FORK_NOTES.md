@@ -27,7 +27,10 @@ Detailed per-phase plans and status: [`docs/phases/`](phases/).
 | New: `scripts/connect-calendar.mjs` | `npm run google:connect -- --slot <name>` — consent link for an ADDITIONAL user; reuses the existing OAuth client | 3.1 |
 | New: `functions/calendar-reminders.ts` + `calendar_reminders_sent` table + 15-min schedule | Telegram pings per event at T-12h and T-1h (all-day events: T-12h only); ledger-deduped | 3.1 |
 | Grocery shop sublists | `planner_items.store` (`ah`/`turkish`/`indian`, default ah); Telegram names the shop ("add paneer to indian grocery"); Kindle grocery card + full list render grouped by shop with headers | 3.1 |
-| Telegram read-only queries | new `query` action: grocery (grouped by shop), todo, workout, events_today (all connected calendars); heuristic fast path + LLM schema; mutation-shaped messages never match | 3.1 |
+| Telegram read-only queries | new `query` action: grocery (grouped by shop), todo, workout, events (today / next N days); heuristic fast path + LLM schema; mutation-shaped messages never match | 3.1 |
+| Two-person health | `health_daily_summaries` per-person `source` (`apple_health_ios` / `_keethu`, 8 new metric columns + `hourly` JSONB); payload `health.people[]` + compat flat fields first; per-person `health_targets` PK (metric, person); Telegram "set steps target for keethu to 6000" | 4 |
+| Pregnancy tracker | derived from `PREGNANCY_DUE_DATE` secret (set BEFORE deploying kindle-dashboard-data); week/trimester/countdown/milestones computed server-side; health-screen tile + dedicated swipe screen 3 | 4 |
+| Swipe screens | 3 screens (home/health/pregnancy), horizontal swipe = page flip; tile taps open 24-bar hourly charts; profile image card removed; `KINDLE_SWIPE_INVERT` config flips direction | 4 |
 | New: `migrations/..._create-appliance-status.sql` | Appliance snapshot + alert bookkeeping | 5 |
 | New: `functions/smartthings-poll.ts` | Scheduled PAT poller + transition alert | 5 |
 | New: `functions/planner-cleanup.ts` + nightly schedule | Deletes done planner items after 72h (PLANNER_CLEANUP_AFTER_HOURS); done items also sort to the bottom of each list and stay visible 72h (upstream hid them after 24h) | 2+ |
@@ -62,6 +65,16 @@ npx @insforge/cli schedules create --name planner-nightly-cleanup --cron "30 21 
   --headers '{"X-Planner-Cleanup-Token": "${{secrets.PLANNER_CLEANUP_TOKEN}}"}'
 ```
 Note: the InsForge SDK's chained `.order()` calls overwrite each other — done-last ordering is a JS `.sort()` in `kindle-dashboard-data.ts`, not an ORDER BY.
+
+### Second iPhone health sync — Phase 4
+A second person's Apple Health flows through the same HealthSyncCompanion app built from this repo:
+1. Her `Config/LocalConfig.xcconfig`: same `INSFORGE_HEALTH_SYNC_URL` + `HEALTH_SYNC_TOKEN`, plus
+   `HEALTH_SYNC_SOURCE = apple_health_ios_keethu` (Dinesh's phone leaves it unset — defaults to `apple_health_ios`).
+2. Health read permissions now include Sleep, Heart rate, HRV, Respiratory rate, VO₂max, Exercise.
+3. **First-sync gate**: after her manual Sync, verify rows land under her source — a wrong source would
+   overwrite Dinesh's rows via the UNIQUE(date, source) key.
+4. Health day keys use the PHONE's timezone — travel can misfile a day (documented caveat).
+Watch data flows through the paired iPhone automatically; no watch target exists.
 
 ### Calendar reminders cron — Phase 3.1
 Every 15 min the schedule POSTs `functions/calendar-reminders`; the bot announces each event at T-12h and T-1h (all-day events: T-12h only) to the allowed chat, deduped via the `calendar_reminders_sent` ledger. Each tick costs exactly ONE InsForge function call (~2.9K/mo — see docs/resources/insforge-limits.md). Recreate with:

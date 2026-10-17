@@ -23,7 +23,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         healthService.startObserverQueries { completion in
             Task {
                 defer { completion() }
-                try? await BackgroundHealthSyncRunner.sync(daysBack: 7)
+                // Battery: phase 4 added more HealthKit types, so observer fires
+                // often — throttle to the 5-min staleness window instead of a
+                // full sync on every write.
+                try? await BackgroundHealthSyncRunner.syncIfStale(daysBack: 7)
             }
         }
         Self.scheduleRefresh()

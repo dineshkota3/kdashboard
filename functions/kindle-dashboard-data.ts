@@ -12,21 +12,81 @@ type PlannerItem = {
   updated_at: string;
 };
 
+type HealthTarget = {
+  metric: "steps" | "calories" | "exercise_minutes" | "sleep_hours" | "resting_hr";
+  person: string;
+  label: string;
+  target_value: string | number;
+  unit: string;
+  updated_at: string;
+};
+
 type HealthSummary = {
   date: string;
   steps: number;
   dietary_energy_kcal: string | number;
   protein_g: string | number;
+  carbs_g?: string | number;
+  fat_g?: string | number;
+  exercise_minutes?: number;
+  resting_hr?: number;
+  sleep_hours?: string | number;
+  active_energy_kcal?: string | number;
+  distance_km?: string | number;
+  hrv_sdns_ms?: string | number;
+  respiratory_rate?: string | number;
+  vo2max?: string | number;
+  hourly?: Record<string, unknown>;
   synced_at: string;
   updated_at: string;
 };
 
-type HealthTarget = {
-  metric: "steps" | "calories";
+type HealthPersonPayload = {
+  person: string;
   label: string;
-  target_value: string | number;
-  unit: string;
-  updated_at: string;
+  date: string;
+  steps: number;
+  steps_target: number;
+  steps_unit: string;
+  sleep_h: number;
+  sleep_target_h: number;
+  exercise_minutes: number;
+  exercise_target: number;
+  resting_hr: number;
+  hrv_sdns_ms: number;
+  respiratory_rate: number;
+  vo2max: number;
+  score: number;
+  verdict: string;
+  steps_hit: boolean;
+  exercise_hit: boolean;
+  sleep_hit: boolean;
+  rest_hint: boolean;
+  hr_baseline: number;
+  hr_flag: string;
+  synced_at: string | null;
+  hourly: Record<string, unknown>;
+};
+
+type PregnancyMilestone = {
+  week: number;
+  label: string;
+  date: string;
+  date_display: string;
+  done: boolean;
+  days_until: number;
+};
+
+type PregnancyPayload = {
+  configured: boolean;
+  due_date?: string;
+  due_display?: string;
+  weeks?: number;
+  days?: number;
+  trimester?: number;
+  days_to_go?: number;
+  progress_pct?: number;
+  milestones?: PregnancyMilestone[];
 };
 
 type ChallengeLog = {
@@ -43,6 +103,7 @@ type CalendarEvent = {
   end_iso: string;
   all_day: boolean;
   location: string | null;
+  date_offset: number;
 };
 
 type CalendarFeedPayload = {
@@ -80,7 +141,9 @@ type DashboardPayload = {
     steps_unit: string;
     calories_unit: string;
     synced_at: string | null;
+    people: HealthPersonPayload[];
   };
+  pregnancy: PregnancyPayload;
   challenge: {
     date: string;
     day: number;
@@ -110,6 +173,17 @@ const LIST_TITLES: Record<ListKey, string> = {
   grocery: "Grocery"
 };
 const COMPLETED_ITEM_HIDE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+// Phase 4: two-person health. One Apple Health source per phone; the slot
+// vocabulary matches the calendar system (dinesh/keethu).
+const HEALTH_SOURCE_DINESH = "apple_health_ios";
+const HEALTH_SOURCE_KEETHU = "apple_health_ios_keethu";
+const HEALTH_SOURCES = [HEALTH_SOURCE_DINESH, HEALTH_SOURCE_KEETHU];
+const SLEEP_TARGET_HOURS = 8;
+const EXERCISE_TARGET_MINUTES = 30;
+const HR_BASELINE_WINDOW_DAYS = 7;
+const HR_FLAG_BPM_ABOVE_BASELINE = 7;
+const PERSON_SCORE_WEIGHTS = { steps: 0.4, exercise: 0.3, sleep: 0.3 };
 
 export default async function(req: Request): Promise<Response> {
   const requestStarted = timeMs();
@@ -147,6 +221,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   const [
     itemsResult,
     healthResult,
+    healthBaselineResult,
     challengeResult,
     challengeStartResult,
     targetsResult
@@ -158,10 +233,16 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       .order("created_at", { ascending: false }),
     admin.database
       .from("health_daily_summaries")
-      .select("date,steps,dietary_energy_kcal,protein_g,synced_at,updated_at")
-      .eq("source", "apple_health_ios")
-      .eq("date", today)
-      .limit(1),
+      .select("date,source,steps,dietary_energy_kcal,protein_g,exercise_minutes,resting_hr,sleep_hours,active_energy_kcal,distance_km,hrv_sdns_ms,respiratory_rate,vo2max,hourly,synced_at,updated_at")
+      .in("source", HEALTH_SOURCES)
+      .eq("date", today),
+    admin.database
+      .from("health_daily_summaries")
+      .select("date,source,resting_hr")
+      .in("source", HEALTH_SOURCES)
+      .gte("date", addLocalDays(today, -HR_BASELINE_WINDOW_DAYS))
+      .lt("date", today)
+      .order("date", { ascending: false }),
     admin.database
       .from("challenge_daily_logs")
       .select("date,water_l,sleep_hours,workouts,updated_at")
@@ -174,7 +255,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       .limit(1),
     admin.database
       .from("health_targets")
-      .select("metric,label,target_value,unit,updated_at")
+      .select("metric,person,label,target_value,unit,updated_at")
       .order("metric", { ascending: true })
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
@@ -184,6 +265,9 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
 
   const { data: healthRows, error: healthError } = healthResult;
   if (healthError) throw healthError;
+
+  const { data: baselineRows, error: baselineError } = healthBaselineResult;
+  if (baselineError) throw baselineError;
 
   const { data: challengeRows, error: challengeError } = challengeResult;
   if (challengeError) throw challengeError;
@@ -197,14 +281,23 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   const buildStarted = timeMs();
   const staleCompletedCutoff = Date.now() - COMPLETED_ITEM_HIDE_AFTER_MS;
   const plannerItems = (items as PlannerItem[]).filter((item) => shouldShowPlannerItem(item, staleCompletedCutoff));
-  const calendar = await loadCalendarPayload(admin);
-  const health = firstRow<HealthSummary>(healthRows);
+  const calendar = await loadCalendarPayload(admin, today);
+  const healthBySource = new Map<string, HealthSummary>();
+  for (const row of (healthRows as HealthSummary[]) ?? []) {
+    if (row?.source) healthBySource.set(row.source, row);
+  }
+  const hrHistory = (baselineRows ?? []) as Array<{ source: string; resting_hr: number }>;
+  const health = healthBySource.get(HEALTH_SOURCE_DINESH) ?? null;
   const challenge = firstRow<ChallengeLog>(challengeRows);
   const challengeStart = firstRow<Pick<ChallengeLog, "date">>(challengeStartRows);
   const challengeDay = challengeStart?.date ? challengeDayFor(today, challengeStart.date) : 1;
   const healthTargets = targets as HealthTarget[];
-  const stepsTarget = metricTarget(healthTargets, "steps", 10000, "steps");
-  const caloriesTarget = metricTarget(healthTargets, "calories", 2000, "kcal");
+  const stepsTarget = metricTarget(healthTargets, "steps", "dinesh", 10000, "steps");
+  const caloriesTarget = metricTarget(healthTargets, "calories", "dinesh", 2000, "kcal");
+  const healthPeople = [
+    personHealth(healthBySource.get(HEALTH_SOURCE_DINESH) ?? null, "dinesh", today, healthTargets, hrHistory),
+    personHealth(healthBySource.get(HEALTH_SOURCE_KEETHU) ?? null, "keethu", today, healthTargets, hrHistory)
+  ];
 
   const payloadWithoutVersion = {
     ok: true as const,
@@ -218,8 +311,12 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       calories_target: Math.max(0, Number(caloriesTarget.target_value)),
       steps_unit: stepsTarget.unit,
       calories_unit: caloriesTarget.unit,
-      synced_at: health?.synced_at ?? null
+      synced_at: health?.synced_at ?? null,
+      // Phase 4: per-person feeds. Compat fields above stay first (old binary +
+      // challenge view read them); people follows.
+      people: healthPeople
     },
+    pregnancy: pregnancyBlock(today),
     challenge: {
       date: today,
       day: challengeDay,
@@ -256,7 +353,8 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       health: payloadWithoutVersion.health,
       challenge: payloadWithoutVersion.challenge,
       lists: payloadWithoutVersion.lists,
-      calendar: payloadWithoutVersion.calendar
+      calendar: payloadWithoutVersion.calendar,
+      pregnancy: payloadWithoutVersion.pregnancy
     }))
   };
   logTiming("kindle-dashboard-data", {
@@ -317,16 +415,152 @@ function localDateIndex(value: string): number {
 function metricTarget(
   targets: HealthTarget[],
   metric: HealthTarget["metric"],
+  person: string,
   fallbackValue: number,
   fallbackUnit: string
 ): HealthTarget {
-  return targets.find((target) => target.metric === metric) ?? {
+  return targets.find((target) => target.metric === metric && target.person === person) ?? {
     metric,
+    person,
     label: metric,
     target_value: fallbackValue,
     unit: fallbackUnit,
     updated_at: ""
   };
+}
+
+// ---- Phase 4: two-person health + pregnancy ----
+
+function personHealth(
+  row: HealthSummary | null,
+  person: string,
+  today: string,
+  targets: HealthTarget[],
+  hrHistory: Array<{ source: string; resting_hr: number }>
+): HealthPersonPayload {
+  const label = person.charAt(0).toUpperCase() + person.slice(1);
+  const stepsTarget = metricTarget(targets, "steps", person, person === "keethu" ? 6000 : 10000, "steps");
+  const steps = Math.max(0, Number(row?.steps ?? 0));
+  const sleepHours = Math.max(0, Number(row?.sleep_hours ?? 0));
+  const exerciseMinutes = Math.max(0, Number(row?.exercise_minutes ?? 0));
+  const restingHr = Math.max(0, Number(row?.resting_hr ?? 0));
+
+  const stepsRatio = Math.min(1, steps / Math.max(1, Number(stepsTarget.target_value)));
+  const exerciseRatio = Math.min(1, exerciseMinutes / EXERCISE_TARGET_MINUTES);
+  const sleepRatio = Math.min(1, sleepHours / SLEEP_TARGET_HOURS);
+  const score = Math.round(100 * (
+    PERSON_SCORE_WEIGHTS.steps * stepsRatio +
+    PERSON_SCORE_WEIGHTS.exercise * exerciseRatio +
+    PERSON_SCORE_WEIGHTS.sleep * sleepRatio
+  ));
+  const verdict = score >= 80 ? "GREAT" : score >= 60 ? "GOOD" : score >= 40 ? "OK" : "LOW";
+  const stepsHit = stepsRatio >= 1;
+  const exerciseHit = exerciseRatio >= 1;
+  const sleepHit = sleepRatio >= 1;
+
+  const baseline = hrBaseline(hrHistory, person === "keethu" ? HEALTH_SOURCE_KEETHU : HEALTH_SOURCE_DINESH);
+  const hrFlag = baseline <= 0 || restingHr <= 0
+    ? "none"
+    : restingHr >= baseline + HR_FLAG_BPM_ABOVE_BASELINE
+      ? "high"
+      : restingHr <= baseline - HR_FLAG_BPM_ABOVE_BASELINE
+        ? "low"
+        : "ok";
+  // Hint precedence: an elevated resting heart rate outranks the rest suggestion.
+  const hint = hrFlag === "high"
+    ? "HR ELEVATED"
+    : person === "keethu" && exerciseMinutes < EXERCISE_TARGET_MINUTES && sleepHours >= SLEEP_TARGET_HOURS
+      ? "REST"
+      : "";
+
+  return {
+    person,
+    label,
+    date: row?.date ?? today,
+    steps,
+    steps_target: Math.max(0, Number(stepsTarget.target_value)),
+    steps_unit: stepsTarget.unit,
+    sleep_h: Math.round(sleepHours * 10) / 10,
+    sleep_target_h: SLEEP_TARGET_HOURS,
+    exercise_minutes: exerciseMinutes,
+    exercise_target: EXERCISE_TARGET_MINUTES,
+    resting_hr: restingHr,
+    hrv_sdns_ms: Math.max(0, Number(row?.hrv_sdns_ms ?? 0)),
+    respiratory_rate: Math.max(0, Number(row?.respiratory_rate ?? 0)),
+    vo2max: Math.max(0, Number(row?.vo2max ?? 0)),
+    score,
+    verdict,
+    steps_hit: stepsHit,
+    exercise_hit: exerciseHit,
+    sleep_hit: sleepHit,
+    rest_hint: hint === "REST",
+    hr_baseline: baseline,
+    hr_flag: hrFlag,
+    synced_at: row?.synced_at ?? null,
+    hourly: row?.hourly && typeof row.hourly === "object" ? row.hourly : {}
+  };
+}
+
+function hrBaseline(history: Array<{ source: string; resting_hr: number }>, source: string): number {
+  const values = history
+    .filter((row) => row.source === source && Number(row.resting_hr) > 0)
+    .map((row) => Number(row.resting_hr));
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+const GESTATION_DAYS = 280;
+const PREGNANCY_MILESTONE_WEEKS = [
+  { week: 12, label: "NT SCAN / T1 END" },
+  { week: 20, label: "ANATOMY SCAN" },
+  { week: 24, label: "VIABILITY" },
+  { week: 28, label: "TRIMESTER 3" },
+  { week: 32, label: "32 WEEKS" },
+  { week: 36, label: "36 WEEKS" },
+  { week: 37, label: "FULL TERM" },
+  { week: 40, label: "DUE DATE" }
+];
+
+function pregnancyBlock(today: string): PregnancyPayload {
+  const dueDate = (Deno.env.get("PREGNANCY_DUE_DATE") || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+    return { configured: false };
+  }
+  const dueIndex = localDateIndex(dueDate);
+  const todayIndex = localDateIndex(today);
+  const gestationalDays = todayIndex - (dueIndex - GESTATION_DAYS);
+  const weeks = Math.max(0, Math.floor(gestationalDays / 7));
+  const trimester = gestationalDays < 98 ? 1 : gestationalDays < 196 ? 2 : 3;
+  const daysToGo = dueIndex - todayIndex;
+  return {
+    configured: true,
+    due_date: dueDate,
+    due_display: formatShortDate(dueDate),
+    weeks,
+    days: gestationalDays >= 0 ? ((gestationalDays % 7) + 7) % 7 : 0,
+    trimester,
+    days_to_go: daysToGo,
+    progress_pct: Math.max(0, Math.min(100, Math.round((gestationalDays / GESTATION_DAYS) * 100))),
+    milestones: PREGNANCY_MILESTONE_WEEKS.map(({ week, label }) => {
+      const milestoneDate = addLocalDays(dueDate, (week - 40) * 7);
+      const milestoneIndex = dueIndex + (week - 40) * 7;
+      return {
+        week,
+        label,
+        date: milestoneDate,
+        date_display: formatShortDate(milestoneDate),
+        done: todayIndex >= milestoneIndex,
+        days_until: milestoneIndex - todayIndex
+      };
+    })
+  };
+}
+
+function formatShortDate(date: string): string {
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const [year, month, day] = date.split("-").map(Number);
+  if (!year || !month || !day) return date;
+  return `${months[month - 1]} ${String(day).padStart(2, "0")} ${year}`;
 }
 
 function firstRow<T>(rows: unknown): T | null {
@@ -340,7 +574,7 @@ function shouldShowPlannerItem(item: PlannerItem, staleCompletedCutoff: number):
   return updatedAt > staleCompletedCutoff;
 }
 
-async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
+async function loadCalendarPayload(admin: any, today: string): Promise<CalendarPayload> {
   try {
     // One row per connected Google account (Phase 3.1). created_at ordering
     // keeps the original owner first. Capped at 4 feeds — that is the device
@@ -359,7 +593,8 @@ async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
     }
 
     // Each feed fails independently — one revoked calendar never degrades the others.
-    const feeds = await Promise.all(states.map((state) => loadFeedEvents(admin, state)));
+    const timezone = Deno.env.get("DASHBOARD_TIMEZONE") || "Asia/Kolkata";
+    const feeds = await Promise.all(states.map((state) => loadFeedEvents(admin, state, today, timezone)));
 
     const anyOk = feeds.some((feed) => feed.status === "ok");
     const status: CalendarPayload["status"] = anyOk ? "ok" : "unavailable";
@@ -386,7 +621,7 @@ async function loadCalendarPayload(admin: any): Promise<CalendarPayload> {
 // 10-event budget and pushes useful near-term events off the list.
 const CALENDAR_LOOKAHEAD_MS = 122 * 24 * 60 * 60 * 1000;
 
-async function loadFeedEvents(admin: any, state: GoogleCalendarState): Promise<CalendarFeedPayload> {
+async function loadFeedEvents(admin: any, state: GoogleCalendarState, today: string, timezone: string): Promise<CalendarFeedPayload> {
   const slot = state.slot || "owner";
   try {
     const accessToken = await ensureCalendarAccessToken(admin, state);
@@ -418,7 +653,7 @@ async function loadFeedEvents(admin: any, state: GoogleCalendarState): Promise<C
     const eventsJson = await eventsResponse.json();
     const rawItems = Array.isArray(eventsJson?.items) ? eventsJson.items : [];
     const events = rawItems
-      .map((item: unknown) => mapCalendarEvent(item))
+      .map((item: unknown) => mapCalendarEvent(item, today, timezone))
       .filter((item: CalendarEvent | null): item is CalendarEvent => item !== null)
       // Google sorts by startTime, so double-entered events (same flight added
       // twice) sit adjacent — collapse exact copies instead of wasting strip rows.
@@ -481,7 +716,11 @@ async function ensureCalendarAccessToken(admin: any, state: GoogleCalendarState)
   return accessToken;
 }
 
-function mapCalendarEvent(item: unknown): CalendarEvent | null {
+// Phase 4: each event carries its day offset from the payload date so the
+// Kindle can jump from an event row to that date's health screen. All-day
+// events have a date-only start (UTC midnight) — use the literal string,
+// never format the instant (it lands on the previous local day).
+function mapCalendarEvent(item: unknown, today: string, timezone: string): CalendarEvent | null {
   if (!item || typeof item !== "object") return null;
   const event = item as Record<string, any>;
   const start = event.start ?? {};
@@ -491,12 +730,19 @@ function mapCalendarEvent(item: unknown): CalendarEvent | null {
   const title = typeof event.summary === "string" && event.summary.trim()
     ? event.summary.trim().slice(0, 120)
     : "(untitled)";
+  const allDay = Boolean(start.date) && !start.dateTime;
+  const eventDay = allDay ? startIso.slice(0, 10) : new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit"
+  }).format(new Date(startIso));
+  const eventDayIndex = localDateIndex(eventDay);
+  const dateOffset = Number.isFinite(eventDayIndex) ? eventDayIndex - localDateIndex(today) : 0;
   return {
     title,
     start_iso: startIso,
     end_iso: String(end.dateTime || end.date || ""),
-    all_day: Boolean(start.date) && !start.dateTime,
-    location: typeof event.location === "string" ? event.location.slice(0, 200) : null
+    all_day: allDay,
+    location: typeof event.location === "string" ? event.location.slice(0, 200) : null,
+    date_offset: dateOffset
   };
 }
 

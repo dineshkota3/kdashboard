@@ -554,6 +554,36 @@ test("parseQueryMessage: today's events route to events_today", () => {
   assert.equal(parseQueryMessage("my plans today")?.query, "events_today");
 });
 
+// ---- phase 4: per-person health targets ----
+
+test("per-person steps target routes to keethu", () => {
+  const a = parseMessageHeuristically("set steps target for keethu to 6000") as any;
+  assert.equal(a.kind, "target");
+  assert.equal(a.metric, "steps");
+  assert.equal(a.value, 6000);
+  assert.equal(a.person, "keethu");
+});
+
+test("target without a person defaults to dinesh (no person field)", () => {
+  const a = parseMessageHeuristically("set steps target to 12000") as any;
+  assert.equal(a.kind, "target");
+  assert.equal(a.metric, "steps");
+  assert.equal("person" in a, false);
+});
+
+test("unknown person name is dropped from targets", () => {
+  const a = validateTelegramAction({ kind: "target", action: "set_target", metric: "calories", value: 2000, person: "craig" });
+  assert.ok(a);
+  assert.equal("person" in a, false);
+});
+
+test("dinner with keethu never becomes a target action", () => {
+  // The heuristic fallback cannot answer it; the LLM path handles clarify.
+  const a = parseMessageHeuristically("dinner with keethu friday") as any;
+  assert.notEqual(a?.kind, "target");
+  assert.notEqual(a?.kind, "query");
+});
+
 test("parseQueryMessage: mutations are never queries", () => {
   assert.equal(parseQueryMessage("add milk to groceries"), null);
   assert.equal(parseQueryMessage("add clean desk to todo"), null);

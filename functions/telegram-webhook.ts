@@ -15,6 +15,7 @@ type HealthTargetAction = {
   metric: "steps" | "calories";
   value: number;
   unit?: string;
+  person?: string;
 };
 
 type ChallengeAction = {
@@ -124,7 +125,7 @@ export const PLANNER_SYSTEM_PROMPT = [
   "You parse one Telegram dashboard message into strict JSON and respond with only the JSON object.",
   "For planner/list updates return: {\"kind\":\"planner\",\"action\":\"add|complete|uncomplete|delete|clear\",\"list_key\":\"grocery|workout|todo\",\"items\":[\"short item\"],\"all_lists\":false}. Use list_key \"todo\" for chores/tasks. Use [] only for clear.",
   "The grocery list has three shop sublists. For a grocery add, set \"store\":\"ah|turkish|indian\" when the message names the shop (Albert Heijn/AH -> ah, Turkish market -> turkish, Indian store/market -> indian). Omit \"store\" for plain grocery items - they land on Albert Heijn. Never set store for non-grocery lists.",
-  "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\"}.",
+  "For health targets return: {\"kind\":\"target\",\"action\":\"set_target\",\"metric\":\"steps|calories\",\"value\":12000,\"unit\":\"steps|kcal\",\"person\":\"dinesh|keethu\"}. Set \"person\" when the message names Keethu; omit it for the owner (dinesh).",
   "For 75 day challenge check-ins return: {\"kind\":\"challenge\",\"action\":\"add_water|set_sleep|add_workout\",\"value\":1}. Treat XL water as 1 liter, sleep value as hours, and workout value as one completed workout.",
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
@@ -685,11 +686,15 @@ function plannerListLabel(listKey: ListKey): string {
 async function applyHealthTargetAction(admin: any, action: HealthTargetAction): Promise<string> {
   const unit = action.unit || (action.metric === "steps" ? "steps" : "kcal");
   const label = action.metric === "steps" ? "STEPS" : "CALORIES";
+  // Phase 4: targets are per person; messages without a person mean the owner.
+  const person = action.person === "keethu" ? "keethu" : "dinesh";
+  const personName = person === "keethu" ? "Keethu's" : "Dinesh's";
 
   const { data: existing, error: selectError } = await admin.database
     .from("health_targets")
     .select("metric")
     .eq("metric", action.metric)
+    .eq("person", person)
     .limit(1);
   if (selectError) throw selectError;
 
@@ -697,16 +702,17 @@ async function applyHealthTargetAction(admin: any, action: HealthTargetAction): 
     const { error } = await admin.database
       .from("health_targets")
       .update({ label, target_value: action.value, unit })
-      .eq("metric", action.metric);
+      .eq("metric", action.metric)
+      .eq("person", person);
     if (error) throw error;
   } else {
     const { error } = await admin.database
       .from("health_targets")
-      .insert([{ metric: action.metric, label, target_value: action.value, unit }]);
+      .insert([{ metric: action.metric, person, label, target_value: action.value, unit }]);
     if (error) throw error;
   }
 
-  return `Set ${action.metric} target to ${formatNumber(action.value)} ${unit}.`;
+  return `Set ${personName} ${action.metric} target to ${formatNumber(action.value)} ${unit}.`;
 }
 
 async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
@@ -1193,12 +1199,14 @@ function validateTargetAction(input: unknown): HealthTargetAction | null {
   const unit = typeof candidate.unit === "string" && candidate.unit.trim()
     ? candidate.unit.trim()
     : candidate.metric === "steps" ? "steps" : "kcal";
+  const person = typeof candidate.person === "string" ? candidate.person.trim().toLowerCase() : "";
   return {
     kind: "target",
     action: "set_target",
     metric: candidate.metric,
     value,
-    unit
+    unit,
+    ...(person === "dinesh" || person === "keethu" ? { person } : {})
   };
 }
 
@@ -1226,12 +1234,15 @@ function parseTargetHeuristically(message: string): HealthTargetAction | null {
   if (!valueMatch) return null;
   const value = Number(valueMatch[1].replace(/,/g, ""));
   if (!Number.isFinite(value) || value <= 0) return null;
+  // Per-person targets (Phase 4): "set steps target for keethu to 6000".
+  const personMatch = lower.match(/\b(keethu+|dinesh)\b/);
   return {
     kind: "target",
     action: "set_target",
     metric,
     value,
-    unit: metric === "steps" ? "steps" : "kcal"
+    unit: metric === "steps" ? "steps" : "kcal",
+    ...(personMatch ? { person: personMatch[1] === "dinesh" ? "dinesh" : "keethu" } : {})
   };
 }
 

@@ -28,6 +28,8 @@
 	<string>$(HEALTH_SYNC_TOKEN)</string>
 	<key>INSFORGE_HEALTH_SYNC_URL</key>
 	<string>$(INSFORGE_HEALTH_SYNC_URL)</string>
+	<key>HEALTH_SYNC_SOURCE</key>
+	<string>$(HEALTH_SYNC_SOURCE)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSHealthShareUsageDescription</key>

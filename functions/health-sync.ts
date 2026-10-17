@@ -1,5 +1,15 @@
 import { createAdminClient } from "npm:@insforge/sdk";
 
+// Hourly spread for today's tile drill-downs: per-metric arrays, index = hour
+// (0-23). steps/exercise_min/hr are ints (0 = no data for hr); sleep is
+// 0 = no data, 1 = awake, 2 = asleep.
+type HealthHourlyInput = {
+  steps?: number[];
+  exercise_min?: number[];
+  hr?: number[];
+  sleep?: number[];
+};
+
 type HealthDayInput = {
   date: string;
   steps?: number;
@@ -7,6 +17,15 @@ type HealthDayInput = {
   protein_g?: number;
   carbs_g?: number;
   fat_g?: number;
+  exercise_minutes?: number;
+  resting_hr?: number;
+  sleep_hours?: number;
+  active_energy_kcal?: number;
+  distance_km?: number;
+  hrv_sdns_ms?: number;
+  respiratory_rate?: number;
+  vo2max?: number;
+  hourly?: HealthHourlyInput;
 };
 
 type HealthSyncPayload = {
@@ -23,6 +42,15 @@ type HealthDayRow = {
   protein_g: number;
   carbs_g: number;
   fat_g: number;
+  exercise_minutes: number;
+  resting_hr: number;
+  sleep_hours: number;
+  active_energy_kcal: number;
+  distance_km: number;
+  hrv_sdns_ms: number;
+  respiratory_rate: number;
+  vo2max: number;
+  hourly: Record<string, unknown>;
   source: string;
   synced_at: string;
 };
@@ -116,9 +144,42 @@ function validatePayload(payload: HealthSyncPayload): HealthDayRow[] {
     protein_g: cleanNumber(day.protein_g ?? 0, "protein_g"),
     carbs_g: cleanNumber(day.carbs_g ?? 0, "carbs_g"),
     fat_g: cleanNumber(day.fat_g ?? 0, "fat_g"),
+    exercise_minutes: cleanInteger(day.exercise_minutes ?? 0, "exercise_minutes"),
+    resting_hr: cleanInteger(day.resting_hr ?? 0, "resting_hr"),
+    sleep_hours: cleanNumber(day.sleep_hours ?? 0, "sleep_hours"),
+    active_energy_kcal: cleanNumber(day.active_energy_kcal ?? 0, "active_energy_kcal"),
+    distance_km: cleanNumber(day.distance_km ?? 0, "distance_km"),
+    hrv_sdns_ms: cleanNumber(day.hrv_sdns_ms ?? 0, "hrv_sdns_ms"),
+    respiratory_rate: cleanNumber(day.respiratory_rate ?? 0, "respiratory_rate"),
+    vo2max: cleanNumber(day.vo2max ?? 0, "vo2max"),
+    hourly: cleanHourly(day.hourly),
     source,
     synced_at: syncedAt
   }));
+}
+
+// Today's 24 hourly buckets for the tile drill-down charts: per-metric arrays,
+// index = hour. Recomputed wholesale on every sync (unlike nutrition, which
+// preserves existing values).
+function cleanHourly(value: HealthHourlyInput | undefined): Record<string, unknown> {
+  const source = value && typeof value === "object" ? value : {};
+  const arrays = ["steps", "exercise_min", "hr", "sleep"] as const;
+  const out: Record<string, unknown> = {};
+  for (const name of arrays) {
+    const raw = (source as Record<string, unknown>)[name];
+    const list = Array.isArray(raw) ? raw : [];
+    if (list.length > 24) {
+      throw new Error(`hourly ${name} can include at most 24 buckets.`);
+    }
+    out[name] = list.map((entry) => {
+      const numeric = Number(entry);
+      if (!Number.isFinite(numeric) || numeric < 0) return 0;
+      if (name === "steps" || name === "exercise_min") return Math.round(numeric);
+      if (name === "hr") return Math.min(250, Math.round(numeric));
+      return Math.min(2, Math.round(numeric)); // sleep 0/1/2
+    });
+  }
+  return out;
 }
 
 function mergeHealthRowForUpdate(row: HealthDayRow, existing: ExistingHealthDayRow): HealthDayRow {

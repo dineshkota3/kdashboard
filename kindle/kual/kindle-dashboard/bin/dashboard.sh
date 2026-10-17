@@ -16,6 +16,7 @@ INTERVAL="${INTERVAL:-3600}"
 DASHBOARD_KEEP_AWAKE="${DASHBOARD_KEEP_AWAKE:-1}"
 DASHBOARD_SLEEP_WINDOW="${DASHBOARD_SLEEP_WINDOW:-off}"
 DASHBOARD_TIMEZONE="${DASHBOARD_TIMEZONE:-}"
+KINDLE_SWIPE_INVERT="${KINDLE_SWIPE_INVERT:-}"
 [ -n "$DASHBOARD_TIMEZONE" ] && export TZ="$DASHBOARD_TIMEZONE"
 INVERT_IMAGES="${INVERT_IMAGES:-0}"
 [ -n "$DASHBOARD_FORCE_INVERT_IMAGES" ] && INVERT_IMAGES="$DASHBOARD_FORCE_INVERT_IMAGES"
@@ -95,6 +96,7 @@ start_dashboard() {
   log "starting native dashboard interval=$INTERVAL keep_awake=$DASHBOARD_KEEP_AWAKE sleep_window=$DASHBOARD_SLEEP_WINDOW timezone=${TZ:-kindle-local}"
   image_args=""
   [ "$INVERT_IMAGES" = "1" ] && image_args="--invert-images"
+  [ "$KINDLE_SWIPE_INVERT" = "1" ] && image_args="$image_args --swipe-invert-x"
   save_args=""
   [ -n "$SAVE_PGM" ] && save_args="--save-pgm $SAVE_PGM"
   nohup "$RUN_APP" \
@@ -142,6 +144,7 @@ case "$1" in
     chmod 755 "$RUN_APP" >> "$LOG" 2>&1
     image_args=""
     [ "$INVERT_IMAGES" = "1" ] && image_args="--invert-images"
+    [ "$KINDLE_SWIPE_INVERT" = "1" ] && image_args="$image_args --swipe-invert-x"
     once_save_pgm="${SAVE_PGM:-/mnt/us/documents/kindle-dashboard-last-render.pgm}"
     "$RUN_APP" --url "$DASHBOARD_DATA_URL" --events-url "$DASHBOARD_EVENTS_URL" --toggle-url "$DASHBOARD_TOGGLE_URL" --read-token "$DASHBOARD_READ_TOKEN" --toggle-token "$DASHBOARD_TOGGLE_TOKEN" --cache "$CACHE" --sleep-window "$DASHBOARD_SLEEP_WINDOW" --once $image_args --save-pgm "$once_save_pgm" >> "$LOG" 2>&1
     allow_sleep

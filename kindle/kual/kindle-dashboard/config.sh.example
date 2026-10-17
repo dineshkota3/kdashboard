@@ -13,4 +13,6 @@ DASHBOARD_KEEP_AWAKE="1"
 DASHBOARD_SLEEP_WINDOW="off"
 # Optional: leave unset to use the Kindle's own timezone.
 # DASHBOARD_TIMEZONE="Europe/Amsterdam"
+# Flip swipe direction if page flips feel reversed on your panel:
+# KINDLE_SWIPE_INVERT="1"
 INVERT_IMAGES="0"

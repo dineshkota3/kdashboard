@@ -1,7 +1,19 @@
 import Foundation
 
 enum AppConfig {
-    static let source = "apple_health_ios"
+    // Per-person source (Phase 4): Keethu's phone sets
+    // HEALTH_SYNC_SOURCE = apple_health_ios_keethu in LocalConfig.xcconfig.
+    // Unset/placeholder falls back to the owner's source.
+    static let source: String = {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "HEALTH_SYNC_SOURCE") as? String else {
+            return "apple_health_ios"
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty || value.contains("$(") || value.contains("replace-with") {
+            return "apple_health_ios"
+        }
+        return value
+    }()
 
     static var healthSyncURL: URL {
         get throws {

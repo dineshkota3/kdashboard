@@ -57,7 +57,6 @@ extension: $(KINDLE_TARGET)
 	cp ../kual/kindle-dashboard/config.sh.example $(EXTENSION_DIR)/config.sh.example
 	cp ../kual/kindle-dashboard/menu.json $(EXTENSION_DIR)/menu.json
 	cp ../kual/kindle-dashboard/assets/challenge-75-day.pgm $(EXTENSION_DIR)/assets/challenge-75-day.pgm
-	cp ../kual/kindle-dashboard/assets/profile-placeholder.pgm $(EXTENSION_DIR)/assets/profile-placeholder.pgm
 	cp ../kual/kindle-dashboard/bin/menu-ping.sh $(EXTENSION_DIR)/bin/menu-ping.sh
 	cp ../kual/kindle-dashboard/bin/start.sh $(EXTENSION_DIR)/bin/start.sh
 	cp ../kual/kindle-dashboard/bin/start-light.sh $(EXTENSION_DIR)/bin/start-light.sh
@@ -82,7 +81,6 @@ extension-zig: $(ZIG_TARGET_BINARY)
 	cp ../kual/kindle-dashboard/config.sh.example $(EXTENSION_DIR)/config.sh.example
 	cp ../kual/kindle-dashboard/menu.json $(EXTENSION_DIR)/menu.json
 	cp ../kual/kindle-dashboard/assets/challenge-75-day.pgm $(EXTENSION_DIR)/assets/challenge-75-day.pgm
-	cp ../kual/kindle-dashboard/assets/profile-placeholder.pgm $(EXTENSION_DIR)/assets/profile-placeholder.pgm
 	cp ../kual/kindle-dashboard/bin/menu-ping.sh $(EXTENSION_DIR)/bin/menu-ping.sh
 	cp ../kual/kindle-dashboard/bin/start.sh $(EXTENSION_DIR)/bin/start.sh
 	cp ../kual/kindle-dashboard/bin/start-light.sh $(EXTENSION_DIR)/bin/start-light.sh

@@ -95,7 +95,7 @@ check("native binary builds cleanly", () => {
 });
 
 const tmp = mkdtempSync(join(tmpdir(), "kdash-test-"));
-for (const view of [null, "challenge", "chores", "workout", "grocery", "calendar"]) {
+for (const view of [null, "challenge", "chores", "workout", "grocery", "calendar", "health", "pregnancy", "health-steps", "health-hr"]) {
   check(`render view=${view ?? "home"} at PW5 resolution`, () => {
     const out = join(tmp, `view-${view ?? "home"}.pgm`);
     const args = ["--render", join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "--dump-pgm", out, "--dump-size", "1236x1648"];
@@ -192,6 +192,44 @@ check("phase 3.1: not_connected aggregate with one dead feed still renders both 
   const path = writeTempJson("degraded-feed.json", degraded);
   const bytes = renderToPgm(path, null);
   assert.ok(darkPixelCount(bytes) > 20, "home render blank");
+});
+
+// ---- phase 4: health screens ----
+
+check("phase 4: fixture carries two health people + configured pregnancy", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  assert.equal(fixture.health.people.length, 2);
+  assert.equal(fixture.health.people[0].person, "dinesh");
+  assert.equal(fixture.pregnancy.configured, true);
+  assert.equal(fixture.pregnancy.milestones.length, 8);
+});
+
+check("phase 4: health + pregnancy views render non-blank", () => {
+  const fixturePath = join(ROOT, "kindle/native/fixtures/dashboard-data.json");
+  for (const view of ["health", "pregnancy", "health-steps", "health-hr"]) {
+    const bytes = renderToPgm(fixturePath, view);
+    assert.ok(darkPixelCount(bytes) > 20, `view=${view} render blank`);
+  }
+});
+
+check("phase 4: legacy payload without people/pregnancy still renders", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const { people, ...healthCompat } = fixture.health;
+  const legacy = { ...fixture, health: healthCompat };
+  delete legacy.pregnancy;
+  const path = writeTempJson("legacy-no-people.json", legacy);
+  for (const view of [null, "health", "pregnancy"]) {
+    const bytes = renderToPgm(path, view);
+    assert.ok(darkPixelCount(bytes) > 20, `view=${view ?? "home"} render blank`);
+  }
+});
+
+check("phase 4: unconfigured pregnancy renders the setup hint", () => {
+  const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
+  const unconfigured = { ...fixture, pregnancy: { configured: false } };
+  const path = writeTempJson("pregnancy-unset.json", unconfigured);
+  const bytes = renderToPgm(path, "pregnancy");
+  assert.ok(darkPixelCount(bytes) > 20, "pregnancy render blank");
 });
 
 rmSync(tmp, { recursive: true, force: true });

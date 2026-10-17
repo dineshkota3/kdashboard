@@ -1,2 +1,5 @@
 INSFORGE_HEALTH_SYNC_URL = https:/$()/your-project.insforge.app/functions/health-sync
 HEALTH_SYNC_TOKEN = replace-with-your-health-sync-token
+HEALTH_SYNC_SOURCE = apple_health_ios
+// Phase 4: a second person's phone uses its own source so rows never collide:
+// HEALTH_SYNC_SOURCE = apple_health_ios_keethu
