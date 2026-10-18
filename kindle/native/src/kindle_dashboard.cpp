@@ -101,7 +101,7 @@ struct CalendarFeed {
 
 // ---- Phase 4: pregnancy companion ----
 
-const int kMaxPregnancyTasks = 16;
+const int kMaxPregnancyTasks = 32;
 const int kMaxPregnancyMilestones = 8;
 
 struct PregnancyTask {
@@ -119,6 +119,9 @@ struct NutritionStrip {
   char line2[64];
   char supplement1[64];
   char supplement2[64];
+  char meal_b[56];
+  char meal_l[56];
+  char meal_d[56];
 };
 
 struct PregnancyMilestone {
@@ -487,6 +490,9 @@ void parsePregnancyTasks(const char* tasks_value, const char* tasks_end, Dashboa
     PregnancyTask* task = &dashboard->tasks[dashboard->task_count];
     extractString(object_start, object_end, "key", task->key, sizeof(task->key), "");
     extractString(object_start, object_end, "label", task->label, sizeof(task->label), "");
+    for (char* c = task->label; *c; c++) {
+      if (*c == '(' || *c == ')') *c = ' ';
+    }
     extractString(object_start, object_end, "category", task->category, sizeof(task->category), "CARE");
     task->due_week = extractInt(object_start, object_end, "due_week", 0);
     task->done = extractBool(object_start, object_end, "done", 0);
@@ -501,6 +507,9 @@ void parseNutrition(const char* nutrition_value, const char* nutrition_end, Dash
   extractString(nutrition_value, nutrition_end, "line2", dashboard->nutrition.line2, sizeof(dashboard->nutrition.line2), "");
   extractString(nutrition_value, nutrition_end, "supplement1", dashboard->nutrition.supplement1, sizeof(dashboard->nutrition.supplement1), "");
   extractString(nutrition_value, nutrition_end, "supplement2", dashboard->nutrition.supplement2, sizeof(dashboard->nutrition.supplement2), "");
+  extractString(nutrition_value, nutrition_end, "meal_b", dashboard->nutrition.meal_b, sizeof(dashboard->nutrition.meal_b), "");
+  extractString(nutrition_value, nutrition_end, "meal_l", dashboard->nutrition.meal_l, sizeof(dashboard->nutrition.meal_l), "");
+  extractString(nutrition_value, nutrition_end, "meal_d", dashboard->nutrition.meal_d, sizeof(dashboard->nutrition.meal_d), "");
   dashboard->nutrition.configured = dashboard->nutrition.line1[0] != '\0';
 }
 
@@ -1721,17 +1730,33 @@ void drawPregnancyDashboard(Canvas* canvas, const Dashboard* dashboard, const ch
     const int strip_x = shell_x + 18;
     const int strip_y = card_y + card_h + 16;
     const int strip_w = shell_w - 36;
-    strokeRect(canvas, strip_x, strip_y, strip_w, 96, 2, 0);
+    strokeRect(canvas, strip_x, strip_y, strip_w, 130, 2, 0);
     drawTextClipped(canvas, strip_x + 14, strip_y + 10, strip_w - 28, "NUTRITION THIS WEEK", 2, 0);
     drawTextClipped(canvas, strip_x + 14, strip_y + 36, strip_w - 28, dashboard->nutrition.line1, 3, 0);
     drawTextClipped(canvas, strip_x + 14, strip_y + 64, strip_w - 28, dashboard->nutrition.line2, 3, 0);
-    // supplements live in the payload too — rendered on the timeline screen
+    if (dashboard->nutrition.supplement1[0]) drawTextClipped(canvas, strip_x + 14, strip_y + 94, strip_w - 28, dashboard->nutrition.supplement1, 2, 0);
+  }
+
+  // Meals today (from payload): B / L / D lines
+  if (dashboard->nutrition.meal_b[0]) {
+    const int meals_x = shell_x + 18;
+    const int meals_y = card_y + card_h + 16 + 130 + 12;
+    const int meals_w = shell_w - 36;
+    strokeRect(canvas, meals_x, meals_y, meals_w, 168, 2, 0);
+    drawTextClipped(canvas, meals_x + 14, meals_y + 10, meals_w - 28, "MEALS TODAY", 2, 0);
+    char meal_row[96];
+    snprintf(meal_row, sizeof(meal_row), "B  %s", dashboard->nutrition.meal_b);
+    drawTextClipped(canvas, meals_x + 14, meals_y + 38, meals_w - 28, meal_row, 3, 0);
+    snprintf(meal_row, sizeof(meal_row), "L  %s", dashboard->nutrition.meal_l);
+    drawTextClipped(canvas, meals_x + 14, meals_y + 74, meals_w - 28, meal_row, 3, 0);
+    snprintf(meal_row, sizeof(meal_row), "D  %s", dashboard->nutrition.meal_d);
+    drawTextClipped(canvas, meals_x + 14, meals_y + 110, meals_w - 28, meal_row, 3, 0);
   }
 
   // DO NOW: open tasks due at/before the current week
   {
     const int now_x = shell_x + 18;
-    const int now_y = card_y + card_h + 120;
+    const int now_y = card_y + card_h + 16 + 130 + 12 + 168 + 12;
     const int now_w = shell_w - 36;
     int open_count = 0;
     for (int i = 0; i < dashboard->task_count; i++) {
@@ -1779,7 +1804,6 @@ void drawCareTimelineDashboard(Canvas* canvas, const Dashboard* dashboard, const
 
   const int row_x = shell_x + 18;
   const int row_w = shell_w - 36;
-  const int row_y = sub_y + 96;
   const int row_h = 56;
   const int row_gap = 6;
   const int bottom = shell_y + shell_h - 24;
@@ -1789,26 +1813,26 @@ void drawCareTimelineDashboard(Canvas* canvas, const Dashboard* dashboard, const
   }
   char summary[64];
   snprintf(summary, sizeof(summary), "%d OF %d DONE", done_count, dashboard->task_count);
-  drawTextClipped(canvas, row_x + 4, sub_y + 62, row_w, summary, 2, 0);
+  drawTextClipped(canvas, row_x + 4, sub_y + 88, row_w, summary, 2, 0);
 
-  int y = row_y;
+  int y = sub_y + 112;
   for (int i = 0; i < dashboard->task_count; i++) {
     const PregnancyTask* task = &dashboard->tasks[i];
     if (y + row_h > shell_y + shell_h - 20) break;
-    strokeRect(canvas, row_x, y, row_w, row_h, 2, 0);
-    char badge[16];
-    snprintf(badge, sizeof(badge), "W%d", task->due_week);
-    drawTextClipped(canvas, row_x + 14, y + 16, 90, badge, 3, 0);
-    char label_upper[64];
-    upperCopy(label_upper, sizeof(label_upper), task->label);
-    if (task->done) {
-      drawTextClipped(canvas, row_x + 110, y + 16, row_w - 220, label_upper, 3, 0);
-      line(canvas, row_x + 106, y + 32, row_x + row_w - 130, y + 32, 2, 0);
-    } else {
-      drawTextClipped(canvas, row_x + 110, y + 16, row_w - 220, label_upper, 3, 0);
-    }
-    drawTextClipped(canvas, row_x + row_w - 110, y + 16, 96, task->done ? "[X]" : "[ ]", 3, 0);
-    y += row_h + row_gap;
+      strokeRect(canvas, row_x, y, row_w, row_h, 2, 0);
+      char badge[16];
+      snprintf(badge, sizeof(badge), "W%d", task->due_week);
+      drawTextClipped(canvas, row_x + 14, y + 16, 90, badge, 3, 0);
+      char label_upper[64];
+      upperCopy(label_upper, sizeof(label_upper), task->label);
+      if (task->done) {
+        drawTextClipped(canvas, row_x + 110, y + 16, row_w - 220, label_upper, 3, 0);
+        line(canvas, row_x + 106, y + 32, row_x + row_w - 130, y + 32, 2, 0);
+      } else {
+        drawTextClipped(canvas, row_x + 110, y + 16, row_w - 220, label_upper, 3, 0);
+      }
+      drawTextClipped(canvas, row_x + row_w - 110, y + 16, 96, task->done ? "[X]" : "[ ]", 3, 0);
+      y += row_h + row_gap;
   }
 }
 

@@ -31,6 +31,9 @@ type PregnancyNutritionPayload = {
   line2: string;
   supplement1: string;
   supplement2: string;
+  meal_b: string;
+  meal_l: string;
+  meal_d: string;
 };
 
 type PregnancyMilestone = {
@@ -395,14 +398,32 @@ function nutritionBlock(today: string): PregnancyNutritionPayload {
   const supplements = ["VITAMINE D 10 UG DAILY"];
   if (configured && week <= 10) supplements.push("FOLIUMZUUR 0.5 MG DAILY (TILL WEEK 10)");
   supplements.push("NO ALCOHOL - CAFFEINE < 200 MG/DAY");
+
+  // Meals today: rotates by weekday, all pregnancy-safe (cooked, pasteurized)
+  const weekday = (localDateIndex(today) + 4) % 7; // 0 = Sunday
+  const meal = PREGNANCY_MEALS[weekday] ?? PREGNANCY_MEALS[0];
   return {
     week,
     line1: lines[0] ?? "",
     line2: lines[1] ?? "",
     supplement1: supplements[0] ?? "",
-    supplement2: supplements[1] ?? ""
+    supplement2: supplements[1] ?? "",
+    meal_b: meal.b,
+    meal_l: meal.l,
+    meal_d: meal.d
   };
 }
+
+// Pregnancy-safe daily meal rotation (no raw fish/meat, pasteurized dairy only)
+const PREGNANCY_MEALS: Array<{ b: string; l: string; d: string }> = [
+  { b: "YOGHURT + GRANOLA + FRUIT", l: "VOLKOREN BROOD + EI", d: "ROAST CHICKEN + VEG" },
+  { b: "HAVERMOUT + BANANA", l: "BROOD + KAAS + KOMKOMMER", d: "PASTA + TOMATO SAUCE + VEG" },
+  { b: "YOGHURT + BERRIES", l: "SOUP + VOLKOREN BROOD", d: "SALMON + POTATO + VEG" },
+  { b: "HAVERMOUT + APPLE", l: "WRAP + CHICKEN + SALAD", d: "RIJS + BEAN CURRY" },
+  { b: "YOGHURT + GRANOLA", l: "BROOD + PINDAKAAS + EI", d: "STIR-FRY + RIJS" },
+  { b: "HAVERMOUT + PEAR", l: "BROOD + EI + TOMATO", d: "FISH + POTATO + VEG" },
+  { b: "YOGHURT + MUESLI", l: "SALAD + CHICKEN", d: "PASTA + PESTO + VEG" }
+];
 
 function firstRow<T>(rows: unknown): T | null {
   return Array.isArray(rows) && rows.length > 0 ? rows[0] as T : null;

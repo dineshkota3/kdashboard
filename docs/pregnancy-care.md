@@ -67,3 +67,57 @@ The full seeded list lives in `migrations/20261017020000_pregnancy-tasks.sql`.
 The Google Health API (successor to Fitbit Web API) exposes **only Fitbit/Pixel device data** —
 Apple-Health-synced data is app-visible but not API-readable, and the Google Fit API sunsets end-2026.
 That is why this dashboard does not sync health *metrics*; the pregnancy tracker is date-driven instead.
+
+
+## Week-by-week care checklist (W8 → W40)
+
+Auto-scheduled on the dashboard from the due date (tasks + dates shift if the
+due date changes). Categories: MED scan/test · ADMIN admin/insurance/work ·
+PREP baby/home prep · HABIT habit/nutrition focus.
+
+| Week | Cat | Task |
+|---|---|---|
+| 8 | MED | Verloskundige intake + bloods (Hb, blood group/Rhesus, HIV, syfilis, rubella, glucose-if-risk) |
+| 8 | HABIT | Start foliumzuur 0.5 mg daily (till w10) + vitamine D 10 µg daily |
+| 8 | ADMIN | Check insurance: verloskundige + kraamzorg coverage |
+| 10 | MED | Termijnecho (dating scan) — confirms due date |
+| 11 | MED | NIPT counseling + decision (optional; free; from 11w) |
+| 10 | HABIT | Stop foliumzuur at w10 (vitamine D continues) |
+| 12 | MED | 13-week echo (optional, free) |
+| 12 | ADMIN | Announce pregnancy at work when ready (legal ≥3 wks before leave) |
+| 12 | PREP | Aanmelden kraamzorg (from 12w) |
+| 13 | ADMIN | Book 20-week anomaly echo (window 18–21w) |
+| 15 | ADMIN | Book 20-week echo deadline |
+| 16 | ADMIN | Kraamzorg absolute deadline — booked by now |
+| 17 | ADMIN | Announce pregnancy at work (latest legal notice point) |
+| 18 | MED | 20-week anomaly echo window opens |
+| 20 | MED | 20-week anomaly echo (anatomy scan) + halfway |
+| 20 | ADMIN | Kraamzorg final confirmation |
+| 22 | MED | Kinkhoest (DKT) vaccination at GGD — window 22w to birth; free; every pregnancy |
+| 24 | MED | Longer checkup + glucose/risk discussion (GDM if risk factors) |
+| 26 | PREP | Prenatal course (aanvullende insurers sometimes reimburse) |
+| 28 | HABIT | Trimester 3 nutrition shift: extra protein, small frequent portions |
+| 30 | ADMIN | Register at birth location + finalize leave paperwork |
+| 32 | PREP | Baby essentials: car seat, cot, pram, clothes |
+| 33 | ADMIN | JGZ/consultatiebureau referral check (RSV nirsevimab in season) |
+| 34 | PREP | Hospital bag started |
+| 35 | MED | GBS swab / discussion (35–36w via verloskundige) |
+| 36 | MED | Weekly controles from now; full term at 37w |
+| 36 | PREP | Car seat installed + hospital bag complete |
+| 38 | ADMIN | Geboorteaangifte plan (3 workdays after birth) + partner leave (1 wk + 5 wks) |
+| 40 | MED | Due date — Apr 1, 2027 (post-due: checks every 2–3 days to w42) |
+
+## Meals rotation (pregnancy-safe, rotates by weekday)
+
+| Day | Breakfast | Lunch | Dinner |
+|---|---|---|---|
+| Sun | Yoghurt + granola + fruit | Volkoren brood + ei | Roast chicken + veg |
+| Mon | Havermout + banana | Brood + kaas + komkommer | Pasta + tomato sauce + veg |
+| Tue | Yoghurt + berries | Soup + volkoren brood | Salmon + potato + veg |
+| Wed | Havermout + apple | Wrap + chicken + salad | Rijs + bean curry |
+| Thu | Yoghurt + granola | Brood + pindakaas + ei | Stir-fry + rijs |
+| Fri | Havermout + pear | Brood + ei + tomato | Fish + potato + veg |
+| Sat | Yoghurt + muesli | Salad + chicken | Pasta + pesto + veg |
+
+All meals follow the safety rules: fully cooked, pasteurized dairy only, no
+high-mercury fish more than occasionally, plenty of water.

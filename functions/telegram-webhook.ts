@@ -772,6 +772,16 @@ async function applyPregnancyTaskAction(admin: any, action: PregnancyTaskAction)
   return `✅ ${best.label} — marked done.`;
 }
 
+const PREGNANCY_MEALS: Array<{ b: string; l: string; d: string }> = [
+  { b: "YOGHURT + GRANOLA + FRUIT", l: "VOLKOREN BROOD + EI", d: "ROAST CHICKEN + VEG" },
+  { b: "HAVERMOUT + BANANA", l: "BROOD + KAAS + KOMKOMMER", d: "PASTA + TOMATO SAUCE + VEG" },
+  { b: "YOGHURT + BERRIES", l: "SOUP + VOLKOREN BROOD", d: "SALMON + POTATO + VEG" },
+  { b: "HAVERMOUT + APPLE", l: "WRAP + CHICKEN + SALAD", d: "RIJS + BEAN CURRY" },
+  { b: "YOGHURT + GRANOLA", l: "BROOD + PINDAKAAS + EI", d: "STIR-FRY + RIJS" },
+  { b: "HAVERMOUT + PEAR", l: "BROOD + EI + TOMATO", d: "FISH + POTATO + VEG" },
+  { b: "YOGHURT + MUESLI", l: "SALAD + CHICKEN", d: "PASTA + PESTO + VEG" }
+];
+
 function nutritionReply(today: string): string {
   const week = gestationalWeek(today);
   const lines = (PREGNANCY_NUTRITION_TRIMESTERS.find((t) => week < t.untilWeek) ??
@@ -779,7 +789,18 @@ function nutritionReply(today: string): string {
   const supplements = ["Vitamine D 10 µg daily"];
   if (week <= 10) supplements.push("Foliumzuur 0.5 mg daily (until week 10)");
   supplements.push("No alcohol - caffeine < 200 mg/day");
-  return `🥗 Nutrition — week ${week}:\n${lines.map((line) => `• ${line}`).join("\n")}\n\n${supplements.map((s) => `• ${s}`).join("\n")}`;
+
+  const weekday = (Math.floor(Date.parse(today) / 86400000) + 4) % 7; // 0 = Sunday
+  const meal = PREGNANCY_MEALS[(weekday + 7) % 7];
+  const meals = meal ? [`Meals today:`, `B: ${meal.b}`, `L: ${meal.l}`, `D: ${meal.d}`] : [];
+  return [
+    `🥗 Nutrition — week ${week}:`,
+    ...lines.map((line) => `• ${line}`),
+    "",
+    ...supplements.map((s) => `• ${s}`),
+    "",
+    ...meals
+  ].join("\n");
 }
 
 export function parseFastHeuristicMessage(message: string): TelegramAction | null {

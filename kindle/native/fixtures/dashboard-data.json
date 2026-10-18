@@ -331,6 +331,9 @@
     "line1": "PROTEIN EVERY PLATE - IRON-RICH + VITAMIN C",
     "line2": "CALCIUM DAILY - FIBER + PLENTY OF WATER",
     "supplement1": "VITAMINE D 10 UG DAILY",
-    "supplement2": "NO ALCOHOL - CAFFEINE < 200 MG/DAY"
+    "supplement2": "NO ALCOHOL - CAFFEINE < 200 MG/DAY",
+    "meal_b": "YOGHURT + GRANOLA + FRUIT",
+    "meal_l": "VOLKOREN BROOD + EI",
+    "meal_d": "ROAST CHICKEN + VEG"
   }
 }
