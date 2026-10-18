@@ -5,7 +5,6 @@ Fork of `thecodedose/kdashboard`, customized for:
 - InsForge hosted free tier (bring-your-own-backend)
 - Z.ai glm-4.7 for NLP (no OpenAI; Coding Plan endpoint `api/coding/paas/v4`)
 - Google Calendar integration (Phase 3)
-- Apple Watch health via HealthSyncCompanion (Phase 4)
 - Samsung SmartThings appliance status + cycle alert (Phase 5)
 - **Meals/recipes/meal-planning removed** (Phase 0)
 
@@ -66,15 +65,6 @@ npx @insforge/cli schedules create --name planner-nightly-cleanup --cron "30 21 
 ```
 Note: the InsForge SDK's chained `.order()` calls overwrite each other — done-last ordering is a JS `.sort()` in `kindle-dashboard-data.ts`, not an ORDER BY.
 
-### Second iPhone health sync — Phase 4
-A second person's Apple Health flows through the same HealthSyncCompanion app built from this repo:
-1. Her `Config/LocalConfig.xcconfig`: same `INSFORGE_HEALTH_SYNC_URL` + `HEALTH_SYNC_TOKEN`, plus
-   `HEALTH_SYNC_SOURCE = apple_health_ios_keethu` (Dinesh's phone leaves it unset — defaults to `apple_health_ios`).
-2. Health read permissions now include Sleep, Heart rate, HRV, Respiratory rate, VO₂max, Exercise.
-3. **First-sync gate**: after her manual Sync, verify rows land under her source — a wrong source would
-   overwrite Dinesh's rows via the UNIQUE(date, source) key.
-4. Health day keys use the PHONE's timezone — travel can misfile a day (documented caveat).
-Watch data flows through the paired iPhone automatically; no watch target exists.
 
 ### Calendar reminders cron — Phase 3.1
 Every 15 min the schedule POSTs `functions/calendar-reminders`; the bot announces each event at T-12h and T-1h (all-day events: T-12h only) to the allowed chat, deduped via the `calendar_reminders_sent` ledger. Each tick costs exactly ONE InsForge function call (~2.9K/mo — see docs/resources/insforge-limits.md). Recreate with:

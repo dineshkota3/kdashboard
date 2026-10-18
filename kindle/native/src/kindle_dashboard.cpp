@@ -62,7 +62,8 @@ enum TouchAction {
   kTouchOpenCalendar = 14,
   kTouchScreenNext = 15,
   kTouchScreenPrev = 16,
-  kTouchOpenPregnancy = 17
+  kTouchOpenPregnancy = 17,
+  kTouchOpenTimeline = 20
 };
 
 struct Item {
@@ -1893,6 +1894,23 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   doubleRect(canvas, shell_x + 10, shell_y + 10, shell_w - 20, header_h, 0);
   const int arrow_left = drawDaySwitchArrows(canvas, shell_x, shell_y, shell_w);
   drawTextClipped(canvas, shell_x + 28, shell_y + 24, arrow_left - shell_x - 44, "DAILY OPS", 4, 0);
+
+  // Phase 4 screen shortcuts (visible buttons — swipes stay as a bonus)
+  {
+    const int btn_y = shell_y + 38;
+    const int btn_w = 170;
+    const int btn_h = 56;
+    const int timeline_x = arrow_left - btn_w - 14;
+    const int pregnancy_x = timeline_x - btn_w - 10;
+    if (pregnancy_x > shell_x + 280) {
+      strokeRect(canvas, pregnancy_x, btn_y, btn_w, btn_h, 2, 0);
+      drawTextCentered(canvas, pregnancy_x + btn_w / 2, btn_y + 16, btn_w - 12, "PREGNANCY", 2, 0);
+      addTouchRegion(Rect{pregnancy_x, btn_y, btn_w, btn_h}, kTouchOpenPregnancy, -1, -1, "", 0);
+      strokeRect(canvas, timeline_x, btn_y, btn_w, btn_h, 2, 0);
+      drawTextCentered(canvas, timeline_x + btn_w / 2, btn_y + 16, btn_w - 12, "TIMELINE", 2, 0);
+      addTouchRegion(Rect{timeline_x, btn_y, btn_w, btn_h}, kTouchOpenTimeline, -1, -1, "", 0);
+    }
+  }
   Rect exit_rect = exitButtonRectForScreen(canvas->width, canvas->height);
   Rect exit_hit_rect = {exit_rect.x - 20, kKindleStatusBarHeight, exit_rect.w + 40, exit_rect.y - kKindleStatusBarHeight + exit_rect.h + 20};
   strokeRect(canvas, exit_rect.x, exit_rect.y, exit_rect.w, exit_rect.h, 2, 0);
@@ -2734,6 +2752,12 @@ int handlePendingTouch(const Options* options) {
   if (action == kTouchOpenPregnancy) {
     fprintf(stderr, "touch=open-pregnancy\n");
     g_active_screen = 1;
+    return 1;
+  }
+
+  if (action == kTouchOpenTimeline) {
+    fprintf(stderr, "touch=open-timeline\n");
+    g_active_screen = 2;
     return 1;
   }
 

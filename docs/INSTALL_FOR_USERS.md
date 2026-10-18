@@ -366,54 +366,6 @@ The native app uses an always-on profile: hourly auto-refresh, manual KUAL
 refresh on demand, and no overnight quiet mode by default. For optional
 auto-open notes, see `kindle/README.md`.
 
-## 6. Optional Health Sync Companion
-
-The native iOS companion app lives in:
-
-```text
-ios/HealthSyncCompanion
-```
-
-It reads Apple Health daily steps and nutrition totals, then sends daily
-aggregate rows to the `health-sync` InsForge function.
-
-Before running the iOS app, make sure the health pieces are deployed:
-
-```sh
-npx @insforge/cli db migrations up 20260627000000_create-health-daily-summaries.sql
-npx @insforge/cli secrets add HEALTH_SYNC_TOKEN <long-random-health-sync-token>
-npx @insforge/cli functions deploy health-sync --file functions/health-sync.ts --name "Health Sync"
-```
-
-Then configure the local iOS secret:
-
-```sh
-cd ios/HealthSyncCompanion
-cp Config/LocalConfig.example.xcconfig Config/LocalConfig.xcconfig
-```
-
-Edit `Config/LocalConfig.xcconfig` so `HEALTH_SYNC_TOKEN` matches the InsForge
-secret. Open `HealthSyncCompanion.xcodeproj` in Xcode and run it on a real
-iPhone; HealthKit data is not meaningfully testable in the simulator.
-
-### Second Person's Health Sync
-
-A second person (e.g. a partner) can sync their Apple Health to the same dashboard:
-
-1. Build the same `HealthSyncCompanion` app on their iPhone (own Xcode signing session).
-2. In their `Config/LocalConfig.xcconfig`, use the same `INSFORGE_HEALTH_SYNC_URL` and
-   `HEALTH_SYNC_TOKEN`, but set their own source:
-   `HEALTH_SYNC_SOURCE = apple_health_ios_keethu` (use their name; the owner's phone
-   leaves the key unset).
-3. Grant Health read permissions when prompted (include Sleep, Heart rate, HRV,
-   Respiratory rate, VO₂max, Exercise — Apple Watch data flows through the paired
-   iPhone automatically).
-4. After their first manual Sync, verify rows land under their source — a wrong
-   source would overwrite the owner's rows.
-
-The Kindle health screen shows one column per synced person, and per-person
-targets can be set from Telegram (`set steps target for keethu to 6000`).
-
 ## Updating Later
 
 When you pull a new version:
