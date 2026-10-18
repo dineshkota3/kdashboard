@@ -1897,9 +1897,9 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
 
   // Phase 4 screen shortcuts (visible buttons — swipes stay as a bonus)
   {
-    const int btn_y = shell_y + 38;
+    const int btn_y = shell_y + 30;
     const int btn_w = 170;
-    const int btn_h = 56;
+    const int btn_h = 54;
     const int timeline_x = arrow_left - btn_w - 14;
     const int pregnancy_x = timeline_x - btn_w - 10;
     if (pregnancy_x > shell_x + 280) {
