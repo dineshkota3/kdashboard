@@ -18,9 +18,24 @@ type PregnancyTask = {
   done: boolean;
 };
 
+// Phase 4.1: chores (scheduled, done per day) feed the SSE hash so Telegram
+// done/skip pushes a refresh.
+type ChoreRow = {
+  id: string;
+  text: string;
+  pattern: "daily" | "weekly" | "once";
+  days: string;
+  once_date: string;
+  start_min: number;
+  end_min: number;
+  skip_date: string;
+};
+
 type DashboardData = {
   items: PlannerItem[];
   tasks: PregnancyTask[];
+  chores: ChoreRow[];
+  choreDones: Array<{ chore_id: string; day: string }>;
   pregnancyWeek: number;
   pregnancyDay: number;
 };
@@ -108,7 +123,7 @@ async function loadDashboardData(): Promise<DashboardData> {
   const today = dashboardLocalDate();
 
   const baseStarted = timeMs();
-  const [itemsResult, tasksResult] = await Promise.all([
+  const [itemsResult, tasksResult, choresResult, choresDoneResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,created_at,updated_at")
@@ -117,7 +132,14 @@ async function loadDashboardData(): Promise<DashboardData> {
     admin.database
       .from("pregnancy_tasks")
       .select("key,label,due_week,done")
-      .order("due_week", { ascending: true })
+      .order("due_week", { ascending: true }),
+    admin.database
+      .from("chores")
+      .select("id,text,pattern,days,once_date,start_min,end_min,skip_date"),
+    admin.database
+      .from("chore_dones")
+      .select("chore_id,day")
+      .gte("day", addLocalDays(today, -1))
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
@@ -127,9 +149,17 @@ async function loadDashboardData(): Promise<DashboardData> {
   const { data: tasks, error: tasksError } = tasksResult;
   if (tasksError) throw tasksError;
 
+  const { data: chores, error: choresError } = choresResult;
+  if (choresError) throw choresError;
+
+  const { data: choreDones, error: choresDoneError } = choresDoneResult;
+  if (choresDoneError) throw choresDoneError;
+
   const payload = {
     items: items as PlannerItem[],
     tasks: tasks as PregnancyTask[],
+    chores: (chores ?? []) as ChoreRow[],
+    choreDones: choreDones ?? [],
     ...pregnancyProgress(today)
   };
   logTiming("kindle-dashboard-events", {
@@ -158,9 +188,20 @@ function getDashboardVersion(data: DashboardData): string {
   return hashText(JSON.stringify({
     items: [...data.items].sort((a, b) => a.updated_at.localeCompare(b.updated_at)),
     tasks: [...data.tasks].sort((a, b) => a.key.localeCompare(b.key)),
+    chores: [...data.chores].sort((a, b) => a.id.localeCompare(b.id)),
+    choreDones: [...data.choreDones].sort((a, b) => `${a.day}${a.chore_id}`.localeCompare(`${b.day}${b.chore_id}`)),
     pregnancyWeek: data.pregnancyWeek,
     pregnancyDay: data.pregnancyDay
   }));
+}
+
+function addLocalDays(date: string, offset: number): string {
+  const [year, month, day] = date.split("-").map(Number);
+  const value = new Date(Date.UTC(year, month - 1, day + offset));
+  const y = value.getUTCFullYear();
+  const m = String(value.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(value.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 function dashboardLocalDate(): string {

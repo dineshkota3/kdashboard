@@ -73,3 +73,4 @@ Investigate before deploying more if, mid-cycle:
 | 2026-10-11 | 3 | 1,130 | 142.67 MB | 12.57 MB | Phase 3.1 deploy day; includes E2E webhook tests |
 | 2026-10-15 | 7 | 1,853 | 226.04 MB | 12.96 MB | First cycle with the reminders cron (96 calls/day, the largest consumer). Pace ~181 calls/day + ~21 MB egress/day → projects to ~5.4% calls / ~13% egress at cycle end. No breach risk. |
 | 2026-10-19 | 11 | 2,758 | 333.17 MB | 13.46 MB | Phase 4 pregnancy todos: deploys + webhook E2E (add/done/list). Pace ~226 calls/day + ~26 MB egress/day → ~7% calls / ~16% egress at cycle end. No breach risk. |
+| 2026-10-19 | 11 | 2,905 | 335 MB | 13.5 MB | Phase 4.1 scheduled chores: 4 deploys + E2E + new 30-min chore-reminders cron (48/day = ~1,488/mo owner-sanctioned). Pace ~275 calls/day → ~9% calls at cycle end. No breach risk. |

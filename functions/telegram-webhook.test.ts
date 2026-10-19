@@ -12,6 +12,10 @@ import {
   extractGroceryStore,
   parseQueryMessage,
   parseEventRangeDays,
+  parseChoreAction,
+  choreWeekdayOf,
+  addDaysIso,
+  nextWeekdayIso,
   PLANNER_SYSTEM_PROMPT
 } from "./telegram-webhook.ts";
 
@@ -489,7 +493,7 @@ test("parseQueryMessage: list lookups route to their query", () => {
   assert.equal(parseQueryMessage("grab the grocery list")?.query, "grocery");
   assert.equal(parseQueryMessage("what are my todos")?.query, "todo");
   assert.equal(parseQueryMessage("todo")?.query, "todo");
-  assert.equal(parseQueryMessage("show chores")?.query, "todo");
+  assert.equal(parseQueryMessage("show chores")?.query, "chores"); // phase 4.1: scheduled chores
   assert.equal(parseQueryMessage("workout list")?.query, "workout");
 });
 
@@ -650,4 +654,141 @@ test("PLANNER_SYSTEM_PROMPT documents pregnancy tasks + nutrition queries", () =
   assert.match(PLANNER_SYSTEM_PROMPT, /pregnancy_task/);
   assert.match(PLANNER_SYSTEM_PROMPT, /"nutrition"/);
   assert.doesNotMatch(PLANNER_SYSTEM_PROMPT, /challenge|add_water|set_target/);
+});
+
+// ---- phase 4.1: scheduled chores ----
+
+const CHORE_TODAY = "2026-10-19"; // a Monday
+
+test("chore weekday/date helpers", () => {
+  assert.equal(choreWeekdayOf("2026-10-19"), "mo");
+  assert.equal(choreWeekdayOf("2026-10-24"), "sa");
+  assert.equal(addDaysIso("2026-10-19", 1), "2026-10-20");
+  assert.equal(nextWeekdayIso("2026-10-19", "mo"), "2026-10-26"); // strictly future
+  assert.equal(nextWeekdayIso("2026-10-19", "tu"), "2026-10-20");
+});
+
+test("owner example: add chore with every <weekday>", () => {
+  const a = parseChoreAction("add chore to clean kitchen every saturday", CHORE_TODAY) as any;
+  assert.equal(a.kind, "chore");
+  assert.equal(a.action, "add");
+  assert.equal(a.text, "clean kitchen");
+  assert.equal(a.pattern, "weekly");
+  assert.equal(a.days, "sa");
+  assert.equal(a.start_min, undefined); // applier falls back to 10:00-22:00
+});
+
+test("owner example: bare recurrence + time is a daily chore", () => {
+  const a = parseChoreAction("soak the cashew everyday at 10pm", CHORE_TODAY) as any;
+  assert.equal(a.kind, "chore");
+  assert.equal(a.action, "add");
+  assert.equal(a.text, "soak the cashew");
+  assert.equal(a.pattern, "daily");
+  assert.equal(a.start_min, 1320);
+  assert.equal(a.end_min, 1440); // point time nags to midnight
+});
+
+test("owner example: multi-weekday list", () => {
+  const a = parseChoreAction("take out trash on tuesday, thursday and saturday", CHORE_TODAY) as any;
+  assert.equal(a.kind, "chore");
+  assert.equal(a.action, "add");
+  assert.equal(a.text, "take out trash");
+  assert.equal(a.pattern, "weekly");
+  assert.equal(a.days, "tu,th,sa");
+});
+
+test("one-off chores: tomorrow and next <weekday>", () => {
+  const t = parseChoreAction("add chore water plants tomorrow 5pm", CHORE_TODAY) as any;
+  assert.equal(t.text, "water plants");
+  assert.equal(t.pattern, "once");
+  assert.equal(t.once_date, "2026-10-20");
+  assert.equal(t.start_min, 1020);
+  assert.equal(t.end_min, 1440);
+
+  const n = parseChoreAction("add chore clean garage next monday 10am", CHORE_TODAY) as any;
+  assert.equal(n.text, "clean garage");
+  assert.equal(n.once_date, "2026-10-26");
+  assert.equal(n.start_min, 600);
+});
+
+test("chore window range parsing", () => {
+  const a = parseChoreAction("add chore clean windows from 10am to 10pm", CHORE_TODAY) as any;
+  assert.equal(a.text, "clean windows");
+  assert.equal(a.start_min, 600);
+  assert.equal(a.end_min, 1320);
+});
+
+test("chore with no schedule words defaults to today + default window", () => {
+  const a = parseChoreAction("add chore vacuum the car", CHORE_TODAY) as any;
+  assert.equal(a.text, "vacuum the car");
+  assert.equal(a.pattern, undefined);
+  assert.equal(a.start_min, undefined); // applier stores once/today + 600/1320
+});
+
+test("chore add with an explicit planner list stays on the planner", () => {
+  assert.equal(parseChoreAction("add milk to groceries tomorrow", CHORE_TODAY), null);
+  assert.equal(parseChoreAction("add eggs and bread to todo at 5pm", CHORE_TODAY), null);
+});
+
+test("event-ish messages without an add verb are NOT hijacked as chores", () => {
+  assert.equal(parseChoreAction("dinner with keethu saturday", CHORE_TODAY), null);
+  assert.equal(parseChoreAction("flight to delhi at 8pm", CHORE_TODAY), null);
+});
+
+test("chore done / skip / delete word orders", () => {
+  const d1 = parseChoreAction("chore done soak the cashew", CHORE_TODAY) as any;
+  assert.equal(d1.action, "done");
+  assert.equal(d1.text, "soak the cashew");
+  const d2 = parseChoreAction("done chore take out trash", CHORE_TODAY) as any;
+  assert.equal(d2.action, "done");
+  const s = parseChoreAction("skip chore trash today", CHORE_TODAY) as any;
+  assert.equal(s.action, "skip");
+  assert.equal(s.text, "trash");
+  const x = parseChoreAction("delete chore trash", CHORE_TODAY) as any;
+  assert.equal(x.action, "delete");
+  assert.equal(x.text, "trash");
+});
+
+test("fast path routes chore messages before the planner", () => {
+  const add = parseFastHeuristicMessage("add chore clean kitchen every saturday") as any;
+  assert.equal(add.kind, "chore");
+  const bare = parseFastHeuristicMessage("soak the cashew everyday at 10pm") as any;
+  assert.equal(bare.kind, "chore");
+  assert.equal(bare.pattern, "daily");
+  const done = parseFastHeuristicMessage("chore done soak cashew") as any;
+  assert.equal(done.kind, "chore");
+  assert.equal(done.action, "done");
+  // plain todo add still lands on the planner todo list
+  const todo = parseFastHeuristicMessage("add milk to todo") as any;
+  assert.equal(todo.kind, "planner");
+  assert.equal(todo.list_key, "todo");
+});
+
+test("chores query routes before the generic todo query", () => {
+  assert.equal(parseQueryMessage("chores")?.query, "chores");
+  assert.equal(parseQueryMessage("chores today")?.query, "chores");
+  assert.equal(parseQueryMessage("what are my chores")?.query, "chores");
+  // generic todo queries unchanged
+  assert.equal(parseQueryMessage("todo")?.query, "todo");
+  assert.equal(parseQueryMessage("pregnancy todos")?.query, "pregnancy_todo");
+});
+
+test("validateTelegramAction accepts and sanitizes chore actions", () => {
+  const add = validateTelegramAction({
+    kind: "chore", action: "add", text: "clean kitchen",
+    pattern: "weekly", days: "sa, su", start_min: 600.4, end_min: 1320
+  }) as any;
+  assert.equal(add.kind, "chore");
+  assert.equal(add.days, "sa,su");
+  assert.equal(add.start_min, 600);
+  assert.equal(validateTelegramAction({ kind: "chore", action: "add", text: "  " }), null);
+  assert.equal(validateTelegramAction({ kind: "chore", action: "bogus", text: "x" }), null);
+  assert.equal(validateTelegramAction({ kind: "chore", action: "add", start_min: 9999 }), null);
+  const done = validateTelegramAction({ kind: "chore", action: "done", text: "trash" }) as any;
+  assert.equal(done.action, "done");
+});
+
+test("PLANNER_SYSTEM_PROMPT documents chores", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /\"kind\\\":\\\"chore\"|kind":"chore|SCHEDULED CHORES/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /"chores"/);
 });

@@ -63,7 +63,8 @@ enum TouchAction {
   kTouchScreenNext = 15,
   kTouchScreenPrev = 16,
   kTouchOpenPregnancy = 17,
-  kTouchOpenTimeline = 20
+  kTouchOpenTimeline = 20,
+  kTouchOpenChores = 21
 };
 
 struct Item {
@@ -133,6 +134,18 @@ struct PregnancyTodo {
   int done;
 };
 
+const int kMaxChores = 24;
+
+// Phase 4.1: scheduled chore for TODAY (server resolves occurrence/done/overdue;
+// times arrive pre-formatted — zero date logic here).
+struct Chore {
+  char id[48];
+  char text[96];
+  char time_display[16];
+  int done;
+  int overdue;
+};
+
 struct PregnancyMilestone {
   int week;
   char label[40];
@@ -165,6 +178,8 @@ struct Dashboard {
   int task_count;
   PregnancyTodo todos[kMaxPregnancyTodos];
   int todo_count;
+  Chore chores[kMaxChores];
+  int chore_count;
   NutritionStrip nutrition;
 };
 
@@ -572,6 +587,25 @@ void parsePregnancyTodos(const char* todos_value, const char* todos_end, Dashboa
   }
 }
 
+void parseChores(const char* chores_value, const char* chores_end, Dashboard* dashboard) {
+  const char* cursor = chores_value + 1;
+  while (cursor < chores_end && dashboard->chore_count < kMaxChores) {
+    const char* object_start = strchr(cursor, '{');
+    if (!object_start || object_start >= chores_end) break;
+    const char* object_end = matchingClose(object_start, '}');
+    if (!object_end || object_end > chores_end) break;
+
+    Chore* chore = &dashboard->chores[dashboard->chore_count];
+    extractString(object_start, object_end, "id", chore->id, sizeof(chore->id), "");
+    extractString(object_start, object_end, "text", chore->text, sizeof(chore->text), "");
+    extractString(object_start, object_end, "time_display", chore->time_display, sizeof(chore->time_display), "");
+    chore->done = extractBool(object_start, object_end, "done", 0);
+    chore->overdue = extractBool(object_start, object_end, "overdue", 0);
+    if (chore->id[0] && chore->text[0]) dashboard->chore_count++;
+    cursor = object_end + 1;
+  }
+}
+
 int parseDashboard(const char* json, Dashboard* dashboard) {
   memset(dashboard, 0, sizeof(*dashboard));
 
@@ -600,6 +634,14 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
     const char* todos_end = matchingClose(todos_value, ']');
     if (todos_end) {
       parsePregnancyTodos(todos_value, todos_end, dashboard);
+    }
+  }
+
+  const char* chores_value = findKeyInRange(json, NULL, "chores");
+  if (chores_value && *chores_value == '[') {
+    const char* chores_end = matchingClose(chores_value, ']');
+    if (chores_end) {
+      parseChores(chores_value, chores_end, dashboard);
     }
   }
 
@@ -1153,14 +1195,14 @@ void freePgmCache() {
 
 const char* displayListTitle(const List* list) {
   if (!list) return "";
-  if (strcmp(list->key, "todo") == 0) return "CHORES";
+  if (strcmp(list->key, "todo") == 0) return "TODO";
   if (strcmp(list->key, "workout") == 0) return "WORKOUT";
   if (strcmp(list->key, "grocery") == 0) return "GROCERY";
   return list->title[0] ? list->title : list->key;
 }
 
 const char* displayListTitleForIndex(const List* list, int list_index) {
-  if (list_index == 0) return "CHORES";
+  if (list_index == 0) return "TODO";
   if (list_index == 1) return "WORKOUT";
   if (list_index == 2) return "GROCERY";
   return displayListTitle(list);
@@ -1433,6 +1475,49 @@ void drawListCard(Canvas* canvas, int x, int y, int w, int h, const List* list, 
   if (list->item_count > shown && h >= 190) {
     char more[48];
     snprintf(more, sizeof(more), "+%d MORE", list->item_count - shown);
+    drawTextClipped(canvas, x + 18, y + h - 68, 180, more, 3, 0);
+  }
+  if (h >= 160) {
+    const int hint_scale = h < 172 ? 2 : 3;
+    drawTextCentered(canvas, x + w / 2, y + h - 34, w - 24, "[ TAP TO OPEN ]", hint_scale, 0);
+  }
+}
+
+// Phase 4.1: today's SCHEDULED chores (rows carry times from the payload).
+void drawChoresPanel(Canvas* canvas, int x, int y, int w, int h, const Dashboard* dashboard) {
+  strokeRect(canvas, x, y, w, h, 3, 0);
+  Rect card_rect = {x, y, w, h};
+  addTouchRegion(card_rect, kTouchOpenChores, -1, -1, "", 0);
+  fprintf(stderr, "render=chores-panel rect=%d,%d,%d,%d count=%d\n", x, y, w, h, dashboard->chore_count);
+
+  drawTextCentered(canvas, x + w / 2, y + 14, w - 24, "CHORES", 4, 0);
+  line(canvas, x + 10, y + 52, x + w - 10, y + 52, 2, 0);
+
+  if (dashboard->chore_count == 0) {
+    drawTextCentered(canvas, x + w / 2, y + 74, w - 36, "NO CHORES TODAY", 2, 0);
+  }
+
+  int row_capacity = (h - 124) / 42;
+  if (row_capacity < 1) row_capacity = 1;
+  if (row_capacity > 5) row_capacity = 5;
+  const int shown = dashboard->chore_count > row_capacity ? row_capacity : dashboard->chore_count;
+  for (int i = 0; i < shown; i++) {
+    const Chore* chore = &dashboard->chores[i];
+    char row[160];
+    char chore_text[96];
+    upperCopy(chore_text, sizeof(chore_text), chore->text);
+    if (chore->done) {
+      snprintf(row, sizeof(row), "[X] %.12s %.56s", chore->time_display, chore_text);
+    } else if (chore->overdue) {
+      snprintf(row, sizeof(row), "!  %.12s %.56s", chore->time_display, chore_text);
+    } else {
+      snprintf(row, sizeof(row), "[ ] %.12s %.56s", chore->time_display, chore_text);
+    }
+    drawTextClipped(canvas, x + 18, y + 74 + i * 42, w - 36, row, 3, 0);
+  }
+  if (dashboard->chore_count > shown && h >= 190) {
+    char more[48];
+    snprintf(more, sizeof(more), "+%d MORE", dashboard->chore_count - shown);
     drawTextClipped(canvas, x + 18, y + h - 68, 180, more, 3, 0);
   }
   if (h >= 160) {
@@ -1838,7 +1923,6 @@ void drawCareTimelineDashboard(Canvas* canvas, const Dashboard* dashboard, const
   const int row_w = shell_w - 36;
   const int row_h = 56;
   const int row_gap = 6;
-  const int bottom = shell_y + shell_h - 24;
   int done_count = 0;
   for (int i = 0; i < dashboard->task_count; i++) {
     if (dashboard->tasks[i].done) done_count++;
@@ -1868,6 +1952,62 @@ void drawCareTimelineDashboard(Canvas* canvas, const Dashboard* dashboard, const
   }
 }
 
+// Phase 4.1: full-screen today's scheduled chores with times.
+void drawChoresDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
+  clearCanvas(canvas, 255);
+  clearTouchRegions();
+  g_last_screen_width = canvas->width;
+  g_last_screen_height = canvas->height;
+  const int shell_w = canvas->width;
+  const int shell_x = 0;
+  const int shell_y = kKindleStatusBarHeight;
+  const int shell_h = canvas->height - shell_y;
+  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
+  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
+
+  const int sub_y = shell_y + 10 + 132 + 8;
+  drawSubHeader(canvas, shell_x, sub_y, shell_w, "CHORES TODAY");
+
+  int done_count = 0;
+  for (int i = 0; i < dashboard->chore_count; i++) {
+    if (dashboard->chores[i].done) done_count++;
+  }
+  char summary[64];
+  snprintf(summary, sizeof(summary), "%d OF %d DONE", done_count, dashboard->chore_count);
+  drawTextClipped(canvas, shell_x + 22, sub_y + 88, shell_w - 44, summary, 2, 0);
+
+  if (dashboard->chore_count == 0) {
+    drawTextCentered(canvas, shell_x + shell_w / 2, sub_y + 150, shell_w - 44, "NO CHORES TODAY", 3, 0);
+    drawTextCentered(canvas, shell_x + shell_w / 2, sub_y + 200, shell_w - 44, "ADD VIA TELEGRAM", 2, 0);
+    return;
+  }
+
+  const int row_x = shell_x + 18;
+  const int row_w = shell_w - 36;
+  const int row_h = 64;
+  const int row_gap = 8;
+  int y = sub_y + 112;
+  const int bottom = shell_y + shell_h - 24;
+  for (int i = 0; i < dashboard->chore_count && y + row_h <= bottom; i++) {
+    const Chore* chore = &dashboard->chores[i];
+    strokeRect(canvas, row_x, y, row_w, row_h, 2, 0);
+    char chore_text[96];
+    upperCopy(chore_text, sizeof(chore_text), chore->text);
+    char prefix[8] = "[ ]";
+    if (chore->done) snprintf(prefix, sizeof(prefix), "[X]");
+    else if (chore->overdue) snprintf(prefix, sizeof(prefix), " !");
+    char time_col[24];
+    snprintf(time_col, sizeof(time_col), "%.14s", chore->time_display);
+    drawTextClipped(canvas, row_x + 14, y + 18, 96, prefix, 3, 0);
+    drawTextClipped(canvas, row_x + 110, y + 18, 210, time_col, 3, 0);
+    drawTextClipped(canvas, row_x + 330, y + 18, row_w - 350, chore_text, 3, 0);
+    if (chore->done) {
+      line(canvas, row_x + 326, y + 34, row_x + row_w - 20, y + 34, 2, 0);
+    }
+    y += row_h + row_gap;
+  }
+}
+
 void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
   if (g_active_calendar) {
     drawFullCalendarDashboard(canvas, dashboard, status);
@@ -1880,6 +2020,7 @@ void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char
   switch (g_active_screen) {
     case 1: drawPregnancyDashboard(canvas, dashboard, status); return;
     case 2: drawCareTimelineDashboard(canvas, dashboard, status); return;
+    case 3: drawChoresDashboard(canvas, dashboard, status); return;
     default: drawBitmapDashboard(canvas, dashboard, status);
   }
 }
@@ -2000,14 +2141,20 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   }
   const int footer_h = 44;
   const int lists_y = cal_bottom + gap;
-  const int lists_h = shell_y + shell_h - lists_y - footer_h - gap - 10;
+  // Phase 4.1: CHORES (scheduled, left) + GROCERY (right) shrink to make room
+  // for the full-width TODO panel (the indefinite list) at the bottom.
+  const int total_lists_h = shell_y + shell_h - lists_y - footer_h - gap - 10;
+  const int todo_h = shell_h < 900 ? 150 : 210;
+  const int lists_h = total_lists_h - todo_h - gap;
   const int list_w = (shell_w - 20 - gap) / 2;
-  if (dashboard->list_count > 0) {
-    drawListCard(canvas, shell_x + 10, lists_y, list_w, lists_h, &dashboard->lists[0], 0);
-  }
   if (dashboard->list_count > 2) {
+    drawChoresPanel(canvas, shell_x + 10, lists_y, list_w, lists_h, dashboard);
     const int right_x = shell_x + 10 + list_w + gap;
     drawListCard(canvas, right_x, lists_y, list_w, lists_h, &dashboard->lists[2], 2);
+    drawListCard(canvas, shell_x + 10, lists_y + lists_h + gap, shell_w - 20, todo_h, &dashboard->lists[0], 0);
+  } else if (dashboard->list_count > 0) {
+    // Legacy payloads without a grocery list: keep the old two-panel layout.
+    drawListCard(canvas, shell_x + 10, lists_y, list_w, total_lists_h, &dashboard->lists[0], 0);
   }
 
   doubleRect(canvas, shell_x + 10, shell_y + shell_h - footer_h - 10, shell_w - 20, footer_h, 0);
@@ -2817,6 +2964,13 @@ int handlePendingTouch(const Options* options) {
     return 1;
   }
 
+  if (action == kTouchOpenChores) {
+    fprintf(stderr, "touch=open-chores\n");
+    g_active_list = -1;
+    g_active_screen = 3;
+    return 1;
+  }
+
   if (action == kTouchOpenList) {
     fprintf(stderr, "touch=open-list index=%d\n", g_pending_list_index);
     g_active_calendar = 0;
@@ -3161,7 +3315,7 @@ void applyInitialView(const char* view) {
   if (strcmp(view, "calendar") == 0) {
     g_active_calendar = 1;
   } else if (strcmp(view, "chores") == 0) {
-    g_active_list = 0;
+    g_active_screen = 3;
   } else if (strcmp(view, "workout") == 0) {
     g_active_list = 1;
   } else if (strcmp(view, "grocery") == 0) {

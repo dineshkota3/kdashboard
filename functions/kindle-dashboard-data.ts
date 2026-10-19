@@ -108,6 +108,7 @@ type DashboardPayload = {
   pregnancy: PregnancyPayload;
   tasks: PregnancyTaskPayload[];
   pregnancy_todos: PregnancyTodoPayload[];
+  chores: ChorePayload[];
   nutrition: PregnancyNutritionPayload;
   lists: Array<{
     key: ListKey;
@@ -128,6 +129,57 @@ const LIST_TITLES: Record<ListKey, string> = {
   grocery: "Grocery"
 };
 const COMPLETED_ITEM_HIDE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+// Phase 4.1: scheduled chores for TODAY only (server resolves occurrence,
+// done, skip, overdue — zero date logic in the C++ renderer).
+type ChorePayload = {
+  id: string;
+  text: string;
+  time_display: string;
+  done: boolean;
+  overdue: boolean;
+};
+
+type ChoreRow = {
+  id: string;
+  text: string;
+  pattern: "daily" | "weekly" | "once";
+  days: string;
+  once_date: string;
+  start_min: number;
+  end_min: number;
+  skip_date: string;
+};
+
+function choreWeekdayOf(day: string): string {
+  const parsed = Date.parse(`${day}T12:00:00Z`);
+  const wd = new Date(parsed).toUTCString().slice(0, 3).toLowerCase();
+  return wd === "tue" ? "tu" : wd === "thu" ? "th" : wd === "sun" ? "su" : wd;
+}
+
+function choreOccursOn(chore: ChoreRow, day: string): boolean {
+  if (chore.pattern === "once") return chore.once_date === day;
+  if (chore.pattern === "daily") return true;
+  return chore.days.split(",").filter(Boolean).includes(choreWeekdayOf(day));
+}
+
+function choreTimeDisplay(startMin: number, endMin: number): string {
+  const fmt = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  return endMin >= 1440 ? fmt(startMin) : `${fmt(startMin)}-${fmt(endMin)}`;
+}
+
+function buildChores(rows: ChoreRow[], doneIds: Set<string>, today: string, nowMin: number): ChorePayload[] {
+  return rows
+    .filter((chore) => choreOccursOn(chore, today) && chore.skip_date !== today)
+    .sort((a, b) => a.start_min - b.start_min)
+    .map((chore) => ({
+      id: chore.id,
+      text: chore.text,
+      time_display: choreTimeDisplay(chore.start_min, chore.end_min),
+      done: doneIds.has(chore.id),
+      overdue: !doneIds.has(chore.id) && nowMin > chore.end_min
+    }));
+}
 
 // Phase 4: pregnancy nutrition guidance (NL Voedingscentrum-aligned). The
 // supplements list is week-dependent (foliumzuur only until week 10).
@@ -188,7 +240,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   });
 
   const baseStarted = timeMs();
-  const [itemsResult, tasksResult, todosResult] = await Promise.all([
+  const [itemsResult, tasksResult, todosResult, choresResult, choresDoneResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,store,created_at,updated_at")
@@ -201,7 +253,14 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     admin.database
       .from("pregnancy_todos")
       .select("id,text,done,created_at")
-      .order("created_at", { ascending: false })
+      .order("created_at", { ascending: false }),
+    admin.database
+      .from("chores")
+      .select("id,text,pattern,days,once_date,start_min,end_min,skip_date"),
+    admin.database
+      .from("chore_dones")
+      .select("chore_id")
+      .eq("day", today)
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
@@ -213,6 +272,12 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
 
   const { data: todoRows, error: todosError } = todosResult;
   if (todosError) throw todosError;
+
+  const { data: choreRows, error: choresError } = choresResult;
+  if (choresError) throw choresError;
+
+  const { data: choresDoneRows, error: choresDoneError } = choresDoneResult;
+  if (choresDoneError) throw choresDoneError;
 
   const buildStarted = timeMs();
   const staleCompletedCutoff = Date.now() - COMPLETED_ITEM_HIDE_AFTER_MS;
@@ -227,6 +292,12 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     pregnancy_todos: ((todoRows ?? []) as PregnancyTodoPayload[])
       .slice(0, 8)
       .map((row) => ({ id: row.id, text: row.text, done: row.done })),
+    chores: buildChores(
+      (choreRows ?? []) as ChoreRow[],
+      new Set<string>((choresDoneRows ?? []).map((r: { chore_id: string }) => r.chore_id)),
+      today,
+      dashboardNowMin()
+    ),
     nutrition: nutritionBlock(today),
     lists: (["todo", "workout", "grocery"] as const).map((key) => ({
       key,
@@ -254,6 +325,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       pregnancy: payloadWithoutVersion.pregnancy,
       tasks: payloadWithoutVersion.tasks,
       pregnancy_todos: payloadWithoutVersion.pregnancy_todos,
+      chores: payloadWithoutVersion.chores,
       nutrition: payloadWithoutVersion.nutrition,
       lists: payloadWithoutVersion.lists,
       calendar: payloadWithoutVersion.calendar
@@ -276,6 +348,16 @@ function dashboardLocalDate(): string {
   }).formatToParts(new Date());
   const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
+// Minutes since dashboard-local midnight — used for the chores overdue flag.
+function dashboardNowMin(): number {
+  const timezone = Deno.env.get("DASHBOARD_TIMEZONE") || "Asia/Kolkata";
+  const hm = new Intl.DateTimeFormat("en-GB", {
+    timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false
+  }).format(new Date());
+  const [h, m] = hm.split(":").map(Number);
+  return h * 60 + m;
 }
 
 function dashboardRequestedDate(req: Request): string {
