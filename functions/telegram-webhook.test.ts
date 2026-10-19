@@ -792,3 +792,25 @@ test("PLANNER_SYSTEM_PROMPT documents chores", () => {
   assert.match(PLANNER_SYSTEM_PROMPT, /\"kind\\\":\\\"chore\"|kind":"chore|SCHEDULED CHORES/);
   assert.match(PLANNER_SYSTEM_PROMPT, /"chores"/);
 });
+
+// ---- phase 4.1: ambiguity asks back instead of guessing ----
+
+test("bare chore statements clarify deterministically (heuristic fallback)", () => {
+  const done = parseFastHeuristicMessage("chore done") as any;
+  assert.equal(done.kind, "clarify");
+  assert.match(done.question, /which chore/i);
+  const bareDone = parseFastHeuristicMessage("chores finished") as any;
+  assert.equal(bareDone.kind, "clarify");
+  const add = parseFastHeuristicMessage("add chore") as any;
+  assert.equal(add.kind, "clarify");
+  assert.match(add.question, /what chore/i);
+  // targeted messages still route, not clarify
+  const targeted = parseFastHeuristicMessage("chore done soak cashew") as any;
+  assert.equal(targeted.kind, "chore");
+});
+
+test("PLANNER_SYSTEM_PROMPT: ambiguous list targets clarify, LLM routes first", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /do NOT guess.*clarify|clarify.*do NOT guess/is);
+  assert.match(PLANNER_SYSTEM_PROMPT, /scheduled chores.*plain todo list|Which chore is done\?/is);
+  assert.match(PLANNER_SYSTEM_PROMPT, /bare "chore done"/);
+});

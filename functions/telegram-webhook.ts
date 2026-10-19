@@ -147,6 +147,8 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For personal pregnancy todos return {\"kind\":\"pregnancy_todo\",\"action\":\"add\",\"text\":\"<todo text>\"} when the message asks to ADD something to the pregnancy todos/dashboard list (e.g. \"add buy vitamins to pregnancy todo\"), and {\"kind\":\"pregnancy_todo\",\"action\":\"done\",\"text\":\"<todo words>\"} when it marks one of those personal todos as done. These are separate from the pregnancy care checklist tasks.",
   "For pregnancy care tasks return: {\"kind\":\"pregnancy_task\",\"action\":\"complete_task\",\"task\":\"<task words>\"} when the message marks a pregnancy care task as done (kraamzorg booking, kinkhoest vaccination, GBS swab, scans, hospital registration, baby shopping, hospital bag). Fuzzy-match the task words against the connected task list in the system context.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
+  "When an add or completion does not make clear WHICH list it belongs to - scheduled chores (time-bound, recurring) vs the plain todo list (no time, lives indefinitely) vs grocery vs workout vs a pregnancy todo vs a pregnancy care task - do NOT guess: return {\"kind\":\"clarify\",\"question\":\"<one short question naming the options>\"} (e.g. \"Chore, todo, or grocery?\"). Clues: words like chore, everyday, every <weekday>, at <time>, tomorrow/next <weekday> mean a chore; todo/task/errand mean the todo list; grocery/shopping means grocery. A bare \"chore done\" with no target is ambiguous: ask which chore. A bare add with NO list clue at all (e.g. \"add milk\") is ALSO ambiguous - do NOT default it to grocery: ask \"Chore, todo, or grocery?\".",
+  "If a message marks something done but the target is missing or too vague (e.g. just \"chore done\", \"done\"), return {\"kind\":\"clarify\",\"question\":\"<which item?>\"} instead of inventing one.",
 ].join(" ");
 
 async function parseTelegramMessage(message: string): Promise<TelegramAction | null> {
@@ -163,58 +165,69 @@ async function parseTelegramMessage(message: string): Promise<TelegramAction | n
   return action;
 }
 
-async function parseAction(message: string, slots: string[]): Promise<TelegramAction | null> {
-  const fastAction = parseFastHeuristicMessage(message);
-  if (fastAction) return fastAction;
+// Phase 4.1: the LLM routes FIRST — it sees the full routing context (scheduled
+// chores vs the plain todo list vs grocery vs pregnancy) and can ask clarify
+// questions on ambiguity. The deterministic heuristics are the FALLBACK for
+// LLM outages, bad responses, or a missing ZAI_API_KEY.
+function heuristicFallback(message: string): TelegramAction | null {
+  return parseFastHeuristicMessage(message) ?? parseMessageHeuristically(message);
+}
 
+async function parseAction(message: string, slots: string[]): Promise<TelegramAction | null> {
   const zaiKey = Deno.env.get("ZAI_API_KEY");
   if (!zaiKey) {
-    return parseMessageHeuristically(message);
+    return heuristicFallback(message);
   }
 
   const slotLine = slots.length > 0
     ? ` Connected calendars: ${slots.join(", ")}.`
     : "";
-  const response = await fetch("https://api.z.ai/api/coding/paas/v4/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${zaiKey}`,
-      "Content-Type": "application/json"
-    },
-    signal: AbortSignal.timeout(20000),
-    body: JSON.stringify({
-      model: Deno.env.get("ZAI_MODEL") || "glm-4.7",
-      messages: [
-        { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Owner timezone: ${dashboardTimezone()}. Current date/time there: ${nowString(dashboardTimezone())}.${slotLine}` },
-        { role: "user", content: message }
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0
-    })
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://api.z.ai/api/coding/paas/v4/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${zaiKey}`,
+        "Content-Type": "application/json"
+      },
+      signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({
+        model: Deno.env.get("ZAI_MODEL") || "glm-4.7",
+        messages: [
+          { role: "system", content: `${PLANNER_SYSTEM_PROMPT} Owner timezone: ${dashboardTimezone()}. Current date/time there: ${nowString(dashboardTimezone())}.${slotLine}` },
+          { role: "user", content: message }
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0
+      })
+    });
+  } catch (error) {
+    console.warn(`zai_fetch_failed error=${String(error).slice(0, 200)}`);
+    return heuristicFallback(message);
+  }
 
   if (!response.ok) {
     const errBody = await response.text().catch(() => "");
     console.warn(`zai_parse_failed status=${response.status} body=${errBody.slice(0, 300)}`);
-    return parseMessageHeuristically(message);
+    return heuristicFallback(message);
   }
 
   const payload = await response.json();
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content !== "string") {
-    return parseMessageHeuristically(message);
+    return heuristicFallback(message);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
   } catch {
-    return parseMessageHeuristically(message);
+    return heuristicFallback(message);
   }
   if (parsed && typeof parsed === "object" && (parsed as { kind?: unknown }).kind === "none") {
     return null;
   }
-  return validateTelegramAction(parsed) ?? parseMessageHeuristically(message);
+  return validateTelegramAction(parsed) ?? heuristicFallback(message);
 }
 
 function validateClarifyAction(input: unknown): ClarifyAction | null {
@@ -909,6 +922,25 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
   const choreAction = parseChoreAction(normalized);
   if (choreAction) return choreAction;
 
+  // Ambiguous chore statements ("chore done", "add chore" with no target) ask
+  // back instead of risking a wrong action.
+  if (/\bchores?\b/.test(lower) && !hasExplicitList(lower)) {
+    const residual = lower
+      .replace(/\b(?:please|the|my|a|an|is|are|do|did|to|it)\b/g, " ")
+      .replace(/\bchores?\b/g, " ")
+      .replace(/\b(?:add|put|done|finished|completed|skip|delete|remove)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!residual) {
+      return {
+        kind: "clarify",
+        question: /\b(?:done|finished|completed)\b/.test(lower)
+          ? "Which chore is done? Name it, e.g. \"chore done soak the cashew\"."
+          : "What chore should I add? Include the day(s) and time if any."
+      };
+    }
+  }
+
   const queryAction = parseQueryMessage(normalized);
   if (queryAction) return queryAction;
 
@@ -1438,7 +1470,9 @@ export function parseChoreAction(message: string, today: string = choreTodayIso(
     .trim()
     .replace(/^[-–:,\s]+/, "")
     .slice(0, 80);
-  if (!text) return null;
+  // "chore done" / "add chore" leave a bare action or scaffold word, not a
+  // chore text — let the clarify guard handle those instead of adding junk.
+  if (!text || /^(?:done|finished|completed|skip|delete|remove|it|chore|chores)$/i.test(text)) return null;
 
   const action: ChoreAction = { kind: "chore", action: "add", text };
   if (day) {
