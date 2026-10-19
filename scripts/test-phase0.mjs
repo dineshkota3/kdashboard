@@ -33,7 +33,9 @@ function walk(dir, skip = new Set()) {
 }
 
 console.log("phase 0: repo hygiene");
-check("no meal/recipe references outside phase docs", () => {
+check("no recipe/meal_plan feature creep (planner routes, tables, workout code)", () => {
+  // Phase 4 added a legitimate pregnancy MEALS block; the rule still guards
+  // against the fork parent's recipe/meal-plan planner feature coming back.
   const includeExt = /\.(ts|mjs|js|json|sql|cpp|h|sh|md|example|xml|toml)$/;
   const targets = ["functions", "migrations", "scripts", "kindle", "docs", "README.md", ".env.example"];
   const offenders = [];
@@ -46,7 +48,8 @@ check("no meal/recipe references outside phase docs", () => {
       if (file.endsWith("FORK_NOTES.md") || file.endsWith("test-phase0.mjs")) continue;
       if (file.endsWith(".test.ts")) continue; // negative-assertion tests legitimately contain the words
       const text = readFileSync(file, "utf8");
-      if (/meal|recipe/i.test(text)) offenders.push(file.replace(`${ROOT}/`, ""));
+      if (/recipe|meal_plan|mealplan/i.test(text)) offenders.push(file.replace(`${ROOT}/`, ""));
+      if (/meal/i.test(text) && file.includes("migrations")) offenders.push(file.replace(`${ROOT}/`, ""));
     }
   }
   assert.deepEqual(offenders, []);

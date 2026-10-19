@@ -335,5 +335,10 @@
     "meal_b": "YOGHURT + GRANOLA + FRUIT",
     "meal_l": "VOLKOREN BROOD + EI",
     "meal_d": "ROAST CHICKEN + VEG"
-  }
+  },
+  "pregnancy_todos": [
+    { "id": "todo-1", "text": "BUY PRENATAL VITAMINS", "done": false },
+    { "id": "todo-2", "text": "BOOK KRAAMZORG TOUR", "done": false },
+    { "id": "todo-3", "text": "PICK UP FOLIUMZUUR REFILL", "done": true }
+  ]
 }

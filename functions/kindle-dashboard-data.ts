@@ -25,6 +25,12 @@ type PregnancyTaskPayload = {
   days_until: number;
 };
 
+type PregnancyTodoPayload = {
+  id: string;
+  text: string;
+  done: boolean;
+};
+
 type PregnancyNutritionPayload = {
   week: number;
   line1: string;
@@ -101,6 +107,7 @@ type DashboardPayload = {
   version: string;
   pregnancy: PregnancyPayload;
   tasks: PregnancyTaskPayload[];
+  pregnancy_todos: PregnancyTodoPayload[];
   nutrition: PregnancyNutritionPayload;
   lists: Array<{
     key: ListKey;
@@ -181,7 +188,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
   });
 
   const baseStarted = timeMs();
-  const [itemsResult, tasksResult] = await Promise.all([
+  const [itemsResult, tasksResult, todosResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,store,created_at,updated_at")
@@ -190,7 +197,11 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     admin.database
       .from("pregnancy_tasks")
       .select("key,label,detail,due_week,category,done")
-      .order("due_week", { ascending: true })
+      .order("due_week", { ascending: true }),
+    admin.database
+      .from("pregnancy_todos")
+      .select("id,text,done,created_at")
+      .order("created_at", { ascending: false })
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
@@ -199,6 +210,9 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
 
   const { data: taskRows, error: tasksError } = tasksResult;
   if (tasksError) throw tasksError;
+
+  const { data: todoRows, error: todosError } = todosResult;
+  if (todosError) throw todosError;
 
   const buildStarted = timeMs();
   const staleCompletedCutoff = Date.now() - COMPLETED_ITEM_HIDE_AFTER_MS;
@@ -210,6 +224,9 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     generated_at: `${today}T00:00:00+05:30`,
     pregnancy: pregnancyBlock(today),
     tasks: buildPregnancyTasks((taskRows ?? []) as PregnancyTaskRow[], today),
+    pregnancy_todos: ((todoRows ?? []) as PregnancyTodoPayload[])
+      .slice(0, 8)
+      .map((row) => ({ id: row.id, text: row.text, done: row.done })),
     nutrition: nutritionBlock(today),
     lists: (["todo", "workout", "grocery"] as const).map((key) => ({
       key,
@@ -236,6 +253,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
     version: hashText(JSON.stringify({
       pregnancy: payloadWithoutVersion.pregnancy,
       tasks: payloadWithoutVersion.tasks,
+      pregnancy_todos: payloadWithoutVersion.pregnancy_todos,
       nutrition: payloadWithoutVersion.nutrition,
       lists: payloadWithoutVersion.lists,
       calendar: payloadWithoutVersion.calendar

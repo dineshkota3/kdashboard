@@ -14,7 +14,8 @@ const schemaMigrations = [
   "migrations/20261011020000_add-planner-store.sql",
   "migrations/20261017000000_health-new-metrics.sql",
   "migrations/20261017010000_health-targets-per-person.sql",
-  "migrations/20261017020000_pregnancy-tasks.sql"
+  "migrations/20261017020000_pregnancy-tasks.sql",
+  "migrations/20261018000000_pregnancy-todos.sql"
 ];
 
 const sampleDataMigrations = [];

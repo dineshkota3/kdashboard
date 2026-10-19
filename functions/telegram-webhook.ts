@@ -33,7 +33,7 @@ export type ClarifyAction = {
 // Nothing is stored - the answer goes back to the Telegram chat.
 export type QueryAction = {
   kind: "query";
-  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "nutrition";
+  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "nutrition";
   days?: number;
 };
 
@@ -45,7 +45,15 @@ type PregnancyTaskAction = {
   task: string;
 };
 
-type TelegramAction = PlannerAction | PregnancyTaskAction | CalendarEventAction | ClarifyAction | QueryAction;
+// Phase 4: personal todos on the pregnancy board (distinct from the seeded
+// care timeline). add = new DO NOW item; done = fuzzy-complete by text.
+type PregnancyTodoAction = {
+  kind: "pregnancy_todo";
+  action: "add" | "done";
+  text: string;
+};
+
+type TelegramAction = PlannerAction | PregnancyTaskAction | PregnancyTodoAction | CalendarEventAction | ClarifyAction | QueryAction;
 
 type TelegramUpdate = {
   message?: {
@@ -121,7 +129,8 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
-  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|nutrition\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"nutrition\" gives this week's pregnancy nutrition + supplements.",
+  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|nutrition\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"nutrition\" gives this week's pregnancy nutrition + supplements.",
+  "For personal pregnancy todos return {\"kind\":\"pregnancy_todo\",\"action\":\"add\",\"text\":\"<todo text>\"} when the message asks to ADD something to the pregnancy todos/dashboard list (e.g. \"add buy vitamins to pregnancy todo\"), and {\"kind\":\"pregnancy_todo\",\"action\":\"done\",\"text\":\"<todo words>\"} when it marks one of those personal todos as done. These are separate from the pregnancy care checklist tasks.",
   "For pregnancy care tasks return: {\"kind\":\"pregnancy_task\",\"action\":\"complete_task\",\"task\":\"<task words>\"} when the message marks a pregnancy care task as done (kraamzorg booking, kinkhoest vaccination, GBS swab, scans, hospital registration, baby shopping, hospital bag). Fuzzy-match the task words against the connected task list in the system context.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
 ].join(" ");
@@ -207,6 +216,7 @@ async function applyTelegramAction(admin: any, action: TelegramAction): Promise<
   if (action.kind === "clarify") return action.question;
   if (action.kind === "query") return applyQueryAction(admin, action);
   if (action.kind === "pregnancy_task") return applyPregnancyTaskAction(admin, action);
+  if (action.kind === "pregnancy_todo") return applyPregnancyTodoAction(admin, action);
   if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
   return applyPlannerAction(admin, action);
 }
@@ -225,8 +235,71 @@ async function applyQueryAction(admin: any, action: QueryAction): Promise<string
   if (action.query === "pregnancy_tasks") {
     return listPregnancyTasksReply(await loadPregnancyTaskRows(admin), dashboardLocalDate());
   }
+  if (action.query === "pregnancy_todo") {
+    return listPregnancyTodosReply(await loadPregnancyTodos(admin));
+  }
   if (action.query === "nutrition") return nutritionReply(dashboardLocalDate());
   return queryListItems(admin, action.query);
+}
+
+// ---- Phase 4: personal pregnancy todos (DO NOW on the dashboard) ----
+
+async function loadPregnancyTodos(admin: any): Promise<Array<{ id: string; text: string; done: boolean }>> {
+  const { data: rows, error } = await admin.database
+    .from("pregnancy_todos")
+    .select("id,text,done")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return Array.isArray(rows) ? rows as Array<{ id: string; text: string; done: boolean }> : [];
+}
+
+function listPregnancyTodosReply(todos: Array<{ id: string; text: string; done: boolean }>): string {
+  const open = todos.filter((t) => !t.done);
+  if (open.length === 0) return "🤰 Pregnancy todos: all done!";
+  return `🤰 Pregnancy todos (${open.length} open):\n${open.map((t) => `• ${t.text}`).join("\n")}`;
+}
+
+async function applyPregnancyTodoAction(admin: any, action: PregnancyTodoAction): Promise<string> {
+  const todos = await loadPregnancyTodos(admin);
+  if (action.action === "add") {
+    const text = action.text.trim().slice(0, 120);
+    if (!text) return "What should I add to the pregnancy todos?";
+    const { error } = await admin.database
+      .from("pregnancy_todos")
+      .insert([{ id: crypto.randomUUID(), text, done: false }]);
+    if (error) throw error;
+    return `🤰 Added to pregnancy todos: ${text}`;
+  }
+
+  // done: fuzzy-complete the open todo whose text best matches
+  const open = todos.filter((t) => !t.done);
+  const query = action.text.trim().toLowerCase();
+  let best: { id: string; text: string } | null = null;
+  let bestScore = 0;
+  for (const todo of open) {
+    const hay = todo.text.toLowerCase();
+    if (hay.includes(query)) {
+      const score = 100 + query.length;
+      if (score > bestScore) { bestScore = score; best = todo; }
+      continue;
+    }
+    let score = 0;
+    for (const word of query.split(/\s+/)) {
+      if (word.length > 2 && hay.includes(word)) score += word.length;
+    }
+    if (score > bestScore) { bestScore = score; best = todo; }
+  }
+  if (!best) {
+    return open.length === 0
+      ? "No open pregnancy todos to mark done."
+      : `No pregnancy todo matches "${action.text.slice(0, 40)}".\n${listPregnancyTodosReply(todos)}`;
+  }
+  const { error } = await admin.database
+    .from("pregnancy_todos")
+    .update({ done: true })
+    .eq("id", best.id);
+  if (error) throw error;
+  return `✅ Pregnancy todo done: ${best.text}`;
 }
 
 async function queryListItems(admin: any, listKey: "grocery" | "todo" | "workout"): Promise<string> {
@@ -812,6 +885,9 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
     if (eventAction) return eventAction;
   }
 
+  const todoAction = parsePregnancyTodoAction(normalized);
+  if (todoAction) return todoAction;
+
   const queryAction = parseQueryMessage(normalized);
   if (queryAction) return queryAction;
 
@@ -1074,6 +1150,33 @@ function validatePregnancyTaskAction(input: unknown): PregnancyTaskAction | null
   return { kind: "pregnancy_task", action: "complete_task", task };
 }
 
+// Phase 4: personal pregnancy todos (DO NOW on the pregnancy board).
+// add: "add order vitamins to pregnancy todo" -> pregnancy_todo add
+// done: "pregnancy todo done order vitamins" -> pregnancy_todo done
+export function parsePregnancyTodoAction(message: string): PregnancyTodoAction | null {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  if (!lower.includes("pregnancy")) return null;
+  if (!/\b(todo|todos|dashboard|list)\b/.test(lower)) return null;
+
+  const addMatch = lower.match(/\b(?:add|put)\s+(.+?)\s+to\s+(?:my |the )?pregnancy(?:\s+(?:todo|dashboard|list))?\s*$/);
+  if (addMatch) return { kind: "pregnancy_todo", action: "add", text: addMatch[1].trim() };
+
+  const doneMatch = lower.match(/^(?:done|finished|completed)\s+(?:with\s+)?(?:my |the )?pregnancy\s+(?:todo|todos|list)\b[:\s-]*(.+)$/);
+  if (doneMatch && doneMatch[1].trim()) return { kind: "pregnancy_todo", action: "done", text: doneMatch[1].trim() };
+  return null;
+}
+
+function validatePregnancyTodoAction(input: unknown): PregnancyTodoAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<PregnancyTodoAction>;
+  if (candidate.kind !== "pregnancy_todo") return null;
+  if (candidate.action !== "add" && candidate.action !== "done") return null;
+  const text = typeof candidate.text === "string" ? candidate.text.trim().slice(0, 120) : "";
+  if (!text) return null;
+  return { kind: "pregnancy_todo", action: candidate.action, text };
+}
+
 function validateQueryAction(input: unknown): QueryAction | null {
   if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<QueryAction>;
@@ -1083,7 +1186,7 @@ function validateQueryAction(input: unknown): QueryAction | null {
     if (!Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) return null;
     return { kind: "query", query: "events_range", days };
   }
-  if (candidate.query === "pregnancy_tasks" || candidate.query === "nutrition") {
+  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition") {
     return { kind: "query", query: candidate.query };
   }
   if (candidate.query !== "grocery" && candidate.query !== "todo" && candidate.query !== "workout" && candidate.query !== "events_today") return null;
@@ -1091,7 +1194,7 @@ function validateQueryAction(input: unknown): QueryAction | null {
 }
 
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateQueryAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+  return validateQueryAction(input) ?? validatePregnancyTodoAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
 export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {

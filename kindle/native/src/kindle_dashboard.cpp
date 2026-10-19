@@ -124,6 +124,15 @@ struct NutritionStrip {
   char meal_d[56];
 };
 
+const int kMaxPregnancyTodos = 6;
+
+// Personal todo on the pregnancy board (added via Telegram).
+struct PregnancyTodo {
+  char id[24];
+  char text[80];
+  int done;
+};
+
 struct PregnancyMilestone {
   int week;
   char label[40];
@@ -154,6 +163,8 @@ struct Dashboard {
   Pregnancy pregnancy;
   PregnancyTask tasks[kMaxPregnancyTasks];
   int task_count;
+  PregnancyTodo todos[kMaxPregnancyTodos];
+  int todo_count;
   NutritionStrip nutrition;
 };
 
@@ -544,6 +555,23 @@ void parsePregnancy(const char* pregnancy_value, const char* pregnancy_end, Dash
   }
 }
 
+void parsePregnancyTodos(const char* todos_value, const char* todos_end, Dashboard* dashboard) {
+  const char* cursor = todos_value + 1;
+  while (cursor < todos_end && dashboard->todo_count < kMaxPregnancyTodos) {
+    const char* object_start = strchr(cursor, '{');
+    if (!object_start || object_start >= todos_end) break;
+    const char* object_end = matchingClose(object_start, '}');
+    if (!object_end || object_end > todos_end) break;
+
+    PregnancyTodo* todo = &dashboard->todos[dashboard->todo_count];
+    extractString(object_start, object_end, "id", todo->id, sizeof(todo->id), "");
+    extractString(object_start, object_end, "text", todo->text, sizeof(todo->text), "");
+    todo->done = extractBool(object_start, object_end, "done", 0);
+    if (todo->id[0] && todo->text[0]) dashboard->todo_count++;
+    cursor = object_end + 1;
+  }
+}
+
 int parseDashboard(const char* json, Dashboard* dashboard) {
   memset(dashboard, 0, sizeof(*dashboard));
 
@@ -564,6 +592,14 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
     const char* tasks_end = matchingClose(tasks_value, ']');
     if (tasks_end) {
       parsePregnancyTasks(tasks_value, tasks_end, dashboard);
+    }
+  }
+
+  const char* todos_value = findKeyInRange(json, NULL, "pregnancy_todos");
+  if (todos_value && *todos_value == '[') {
+    const char* todos_end = matchingClose(todos_value, ']');
+    if (todos_end) {
+      parsePregnancyTodos(todos_value, todos_end, dashboard);
     }
   }
 
@@ -1753,34 +1789,30 @@ void drawPregnancyDashboard(Canvas* canvas, const Dashboard* dashboard, const ch
     drawTextClipped(canvas, meals_x + 14, meals_y + 110, meals_w - 28, meal_row, 3, 0);
   }
 
-  // DO NOW: open tasks due at/before the current week
+  // DO NOW: personal pregnancy todos (added via Telegram) — open ones first
   {
     const int now_x = shell_x + 18;
     const int now_y = card_y + card_h + 16 + 130 + 12 + 168 + 12;
     const int now_w = shell_w - 36;
     int open_count = 0;
-    for (int i = 0; i < dashboard->task_count; i++) {
-      if (!dashboard->tasks[i].done && dashboard->tasks[i].due_week <= dashboard->pregnancy.weeks) open_count++;
+    for (int i = 0; i < dashboard->todo_count; i++) {
+      if (!dashboard->todos[i].done) open_count++;
     }
-    drawTextClipped(canvas, now_x, now_y, now_w, open_count > 0 ? "DO NOW" : "ALL TASKS DONE", 3, 0);
+    drawTextClipped(canvas, now_x, now_y, now_w, open_count > 0 ? "DO NOW" : "ALL TODOS DONE", 3, 0);
     int shown = 0;
-    for (int i = 0; i < dashboard->task_count && shown < 3; i++) {
-      const PregnancyTask* task = &dashboard->tasks[i];
-      if (task->done || task->due_week > dashboard->pregnancy.weeks) continue;
+    for (int i = 0; i < dashboard->todo_count && shown < 3; i++) {
+      const PregnancyTodo* todo = &dashboard->todos[i];
+      if (todo->done) continue;
       const int ry = now_y + 34 + shown * 52;
       strokeRect(canvas, now_x, ry, now_w, 48, 2, 0);
       char row_text[96];
-      if (task->due_week <= dashboard->pregnancy.weeks && task->due_week < dashboard->pregnancy.weeks) {
-        snprintf(row_text, sizeof(row_text), "OVERDUE W%d - %.52s", task->due_week, task->label);
-      } else {
-        snprintf(row_text, sizeof(row_text), "W%d - %.60s", task->due_week, task->label);
-      }
+      snprintf(row_text, sizeof(row_text), "[ ] %.68s", todo->text);
       drawTextClipped(canvas, now_x + 14, ry + 12, now_w - 28, row_text, 3, 0);
       shown++;
     }
     if (open_count > shown) {
       char more[48];
-      snprintf(more, sizeof(more), "+%d MORE ON THE TIMELINE", open_count - shown);
+      snprintf(more, sizeof(more), "+%d MORE", open_count - shown);
       drawTextClipped(canvas, now_x + 14, now_y + 34 + shown * 52 + 8, now_w - 28, more, 2, 0);
     }
   }
