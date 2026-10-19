@@ -922,6 +922,11 @@ export function parseQueryMessage(message: string): QueryAction | null {
   if (/\bpregnancy tasks?\b|\bcare tasks?\b|^tasks?$|^my tasks\b/.test(lower)) {
     return { kind: "query", query: "pregnancy_tasks" };
   }
+  // Personal pregnancy todos BEFORE the generic todo pattern so "pregnancy
+  // todos" lists the DO NOW todos, not the chores list.
+  if (/\bpregnancy\s+(todos?|to-?dos?|list)\b/.test(lower)) {
+    return { kind: "query", query: "pregnancy_todo" };
+  }
   if (/\btodos?|to-?dos?|chores?\b/.test(lower) && listy) {
     return { kind: "query", query: "todo" };
   }
@@ -1162,7 +1167,10 @@ export function parsePregnancyTodoAction(message: string): PregnancyTodoAction |
   const addMatch = lower.match(/\b(?:add|put)\s+(.+?)\s+to\s+(?:my |the )?pregnancy(?:\s+(?:todo|dashboard|list))?\s*$/);
   if (addMatch) return { kind: "pregnancy_todo", action: "add", text: addMatch[1].trim() };
 
-  const doneMatch = lower.match(/^(?:done|finished|completed)\s+(?:with\s+)?(?:my |the )?pregnancy\s+(?:todo|todos|list)\b[:\s-]*(.+)$/);
+  // Both word orders: "done pregnancy todo X" and "pregnancy todo done X"
+  const doneMatch =
+    lower.match(/^(?:done|finished|completed)\s+(?:with\s+)?(?:my |the )?pregnancy\s+(?:todo|todos|list)\b[:\s-]*(.+)$/) ||
+    lower.match(/^pregnancy\s+(?:todo|todos|list)\s+(?:done|finished|completed)\s+(.+)$/);
   if (doneMatch && doneMatch[1].trim()) return { kind: "pregnancy_todo", action: "done", text: doneMatch[1].trim() };
   return null;
 }
