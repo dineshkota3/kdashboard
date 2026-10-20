@@ -13,6 +13,7 @@ import {
   parseQueryMessage,
   parseEventRangeDays,
   parseChoreAction,
+  listAllChoresReply,
   choreWeekdayOf,
   addDaysIso,
   nextWeekdayIso,
@@ -813,4 +814,57 @@ test("PLANNER_SYSTEM_PROMPT: ambiguous list targets clarify, LLM routes first", 
   assert.match(PLANNER_SYSTEM_PROMPT, /do NOT guess.*clarify|clarify.*do NOT guess/is);
   assert.match(PLANNER_SYSTEM_PROMPT, /scheduled chores.*plain todo list|Which chore is done\?/is);
   assert.match(PLANNER_SYSTEM_PROMPT, /bare "chore done"/);
+});
+
+test("chores queries: today, tomorrow, and the full schedule", () => {
+  const today = parseQueryMessage("chores") as any;
+  assert.equal(today.query, "chores");
+  assert.equal(today.days, undefined);
+  const explicit = parseQueryMessage("chores today") as any;
+  assert.equal(explicit.query, "chores");
+  const tomorrow = parseQueryMessage("what chores are there tomorrow") as any;
+  assert.equal(tomorrow.query, "chores");
+  assert.equal(tomorrow.days, 1);
+  const all = parseQueryMessage("list all the chores") as any;
+  assert.equal(all.query, "chores_all");
+  const all2 = parseQueryMessage("what chores do i have in total") as any;
+  assert.equal(all2.query, "chores_all");
+  // "every" also appears in chore adds - mutations never become queries
+  assert.equal(parseQueryMessage("add chore clean kitchen every saturday"), null);
+});
+
+test("chores query validation: day offsets clamp 0-6, chores_all passes", () => {
+  assert.equal(validateTelegramAction({ kind: "query", query: "chores", days: 1 })?.query, "chores");
+  assert.equal(validateTelegramAction({ kind: "query", query: "chores", days: 6 })?.query, "chores");
+  assert.equal(validateTelegramAction({ kind: "query", query: "chores", days: 9 }), null);
+  assert.equal(validateTelegramAction({ kind: "query", query: "chores", days: 1.5 }), null);
+  assert.equal(validateTelegramAction({ kind: "query", query: "chores" })?.query, "chores");
+  assert.equal(validateTelegramAction({ kind: "query", query: "chores_all" })?.query, "chores_all");
+});
+
+test("listAllChoresReply formats the full schedule", () => {
+  const reply = listAllChoresReply([
+    { text: "clean kitchen", pattern: "weekly", days: "sa", once_date: "", start_min: 600, end_min: 1320 },
+    { text: "soak the cashew", pattern: "daily", days: "", once_date: "", start_min: 1320, end_min: 1440 },
+    { text: "water plants", pattern: "once", days: "", once_date: "2026-10-20", start_min: 1020, end_min: 1440 }
+  ]);
+  assert.match(reply, /All chores \(3\)/);
+  assert.match(reply, /clean kitchen — sa 10:00-22:00/);
+  assert.match(reply, /soak the cashew — every day 22:00/);
+  assert.match(reply, /water plants — 2026-10-20 17:00/);
+  const empty = listAllChoresReply([]);
+  assert.match(empty, /No chores scheduled/);
+});
+
+test("question-shaped chore mentions never become chore adds (fallback path)", () => {
+  const q = parseFastHeuristicMessage("what chores are there tomorrow") as any;
+  assert.equal(q.kind, "query");
+  assert.equal(q.query, "chores");
+  assert.equal(q.days, 1);
+  const q2 = parseFastHeuristicMessage("list all the chores") as any;
+  assert.equal(q2.kind, "query");
+  assert.equal(q2.query, "chores_all");
+  // adds still work
+  const add = parseFastHeuristicMessage("add chore clean kitchen every saturday") as any;
+  assert.equal(add.kind, "chore");
 });

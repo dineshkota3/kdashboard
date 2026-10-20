@@ -33,7 +33,7 @@ export type ClarifyAction = {
 // Nothing is stored - the answer goes back to the Telegram chat.
 export type QueryAction = {
   kind: "query";
-  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "chores" | "nutrition";
+  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "chores" | "chores_all" | "nutrition";
   days?: number;
 };
 
@@ -142,8 +142,8 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
-  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|chores|nutrition\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"chores\" lists today's scheduled chores with their times; \"nutrition\" gives this week's pregnancy nutrition + supplements.",
-  "For SCHEDULED CHORES (time-bound tasks with reminders, shown on the dashboard CHORES panel) return {\"kind\":\"chore\",...}. {\"kind\":\"chore\",\"action\":\"add\",\"text\":\"<chore text>\",\"pattern\":\"daily|weekly|once\",\"days\":\"<csv mo,tu,we,th,fr,sa,su when weekly>\",\"once_date\":\"<YYYY-MM-DD when once>\",\"start_min\":<minutes from midnight>,\"end_min\":<minutes from midnight>} when the message adds a chore with a recurrence or time (e.g. \"add chore clean kitchen every saturday\", \"soak the cashew everyday at 10pm\", \"take out trash on tuesday thursday and saturday\"). {\"kind\":\"chore\",\"action\":\"done\",\"text\":\"<chore words>\"} marks one of today's chores done; \"skip\" mutes it for today; \"delete\" removes the chore entirely. Chore messages usually contain the word chore, or words like everyday/every <weekday>/tomorrow/at <time>. These chores are DIFFERENT from the plain todo list (no time, lives indefinitely).",
+  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|chores|chores_all|nutrition\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"chores\" lists today's scheduled chores with their times; set \"days\":1 for chores tomorrow (any day offset 0-6, e.g. \"what chores are there tomorrow\"); \"chores_all\" lists every chore with its full recurring schedule (\"list all the chores\"); \"nutrition\" gives this week's pregnancy nutrition + supplements.",
+  "For SCHEDULED CHORES (time-bound tasks with reminders, shown on the dashboard CHORES panel) return {\"kind\":\"chore\",...}. {\"kind\":\"chore\",\"action\":\"add\",\"text\":\"<chore text>\",\"pattern\":\"daily|weekly|once\",\"days\":\"<csv mo,tu,we,th,fr,sa,su when weekly>\",\"once_date\":\"<YYYY-MM-DD when once>\",\"start_min\":<minutes from midnight>,\"end_min\":<minutes from midnight>} when the message adds a chore with a recurrence or time (e.g. \"add chore clean kitchen every saturday\", \"soak the cashew everyday at 10pm\", \"take out trash on tuesday thursday and saturday\"). {\"kind\":\"chore\",\"action\":\"done\",\"text\":\"<chore words>\"} marks one of today's chores done; \"skip\" mutes it for today; \"delete\" removes the chore entirely. Chore messages usually contain the word chore, or words like everyday/every <weekday>/tomorrow/at <time>. These chores are DIFFERENT from the plain todo list (no time, lives indefinitely). Chore time rules: a single point time (\"at 10pm\") is start_min=1320 with end_min=1440 (chores nag until midnight); a window (\"from 10am to 10pm\") sets both; when the message names NO time, OMIT start_min and end_min entirely (server defaults 10:00-22:00). NEVER invent a duration (no start+60) or an all-day 00:00-23:59 window yourself.",
   "For personal pregnancy todos return {\"kind\":\"pregnancy_todo\",\"action\":\"add\",\"text\":\"<todo text>\"} when the message asks to ADD something to the pregnancy todos/dashboard list (e.g. \"add buy vitamins to pregnancy todo\"), and {\"kind\":\"pregnancy_todo\",\"action\":\"done\",\"text\":\"<todo words>\"} when it marks one of those personal todos as done. These are separate from the pregnancy care checklist tasks.",
   "For pregnancy care tasks return: {\"kind\":\"pregnancy_task\",\"action\":\"complete_task\",\"task\":\"<task words>\"} when the message marks a pregnancy care task as done (kraamzorg booking, kinkhoest vaccination, GBS swab, scans, hospital registration, baby shopping, hospital bag). Fuzzy-match the task words against the connected task list in the system context.",
   "Undo/redo/revert requests are NOT supported: for any message asking to undo, revert, or take back the last change, return {\"kind\":\"none\"}. Also return {\"kind\":\"none\"} for questions or small talk instead of inventing items.",
@@ -174,6 +174,12 @@ function heuristicFallback(message: string): TelegramAction | null {
 }
 
 async function parseAction(message: string, slots: string[]): Promise<TelegramAction | null> {
+  // Read-only lookups route deterministically first: exact day math ("chores
+  // tomorrow"), zero misroute risk (the guard inside rejects mutations), and
+  // no LLM latency. Mutations and ambiguous messages go to the LLM.
+  const queryAction = parseQueryMessage(message);
+  if (queryAction) return queryAction;
+
   const zaiKey = Deno.env.get("ZAI_API_KEY");
   if (!zaiKey) {
     return heuristicFallback(message);
@@ -267,7 +273,12 @@ async function applyQueryAction(admin: any, action: QueryAction): Promise<string
     return listPregnancyTodosReply(await loadPregnancyTodos(admin));
   }
   if (action.query === "chores") {
-    return listChoresReply(await loadTodayChores(admin, dashboardLocalDate()));
+    const offset = action.days && action.days > 0 ? Math.min(action.days, 6) : 0;
+    const day = addDaysIso(dashboardLocalDate(), offset);
+    return listChoresReply(await loadTodayChores(admin, day), day);
+  }
+  if (action.query === "chores_all") {
+    return listAllChoresReply(await loadAllChores(admin));
   }
   if (action.query === "nutrition") return nutritionReply(dashboardLocalDate());
   return queryListItems(admin, action.query);
@@ -981,9 +992,14 @@ export function parseQueryMessage(message: string): QueryAction | null {
     return { kind: "query", query: "pregnancy_todo" };
   }
   // Scheduled chores BEFORE the generic todo pattern ("chores" is today's
-  // scheduled list now; "todo" stays the indefinite list).
+  // scheduled list now; "todo" stays the indefinite list). Day-aware: tomorrow,
+  // and "all chores" lists the whole recurring schedule.
   if (/\bchores?\b/.test(lower)) {
-    return { kind: "query", query: "chores" };
+    if (/\ball\b|\bevery\b|\btotal\b|\beverything\b|full (chore )?(list|schedule)|whole (chore )?(list|schedule)/.test(lower)) {
+      return { kind: "query", query: "chores_all" };
+    }
+    const offset = /\btomorrow\b/.test(lower) ? 1 : 0;
+    return { kind: "query", query: "chores", ...(offset ? { days: offset } : {}) };
   }
   if (/\btodos?|to-?dos?|chores?\b/.test(lower) && listy) {
     return { kind: "query", query: "todo" };
@@ -1404,7 +1420,12 @@ function matchWeekdayToken(token: string): string {
 // (grocery/todo/workout keep their routes; bare weekday + no verb stays with
 // the LLM so event-ish messages like "dinner saturday" are not hijacked).
 export function choreAddShaped(lower: string): boolean {
-  if (/\bchores?\b/.test(lower)) return true;
+  if (/\bchores?\b/.test(lower)) {
+    // Question-shaped chore mentions are lookups, not adds ("what chores are
+    // there tomorrow") — let the query path route them.
+    const questionShaped = /^(?:what|which|list|show|any|are|do|does|is|read|grab|give|see|check|tell)\b|are there\b/.test(lower);
+    return !questionShaped;
+  }
   if (hasExplicitList(lower)) return false;
   const strongRecurrence =
     /\b(?:everyday|every\s+day|each\s+day|daily)\b/.test(lower) ||
@@ -1533,13 +1554,45 @@ function choreOccursOn(chore: { pattern: string; days: string; once_date: string
   return chore.days.split(",").filter(Boolean).includes(choreWeekdayOf(day));
 }
 
-function listChoresReply(chores: TodayChore[]): string {
-  if (chores.length === 0) return "🧹 No chores today.";
+function listChoresReply(chores: TodayChore[], day: string = dashboardLocalDate()): string {
+  const label = day === dashboardLocalDate() ? "today" : `for ${dayLabel(day)}`;
+  if (chores.length === 0) return `🧹 No chores ${label}.`;
   const lines = chores.map((c) => {
     const mark = c.done ? "✅" : "⬜";
     return `• ${mark} ${c.text} (${timeWindowLabel(c.start_min, c.end_min)})`;
   });
-  return `🧹 Chores today (${chores.filter((c) => c.done).length}/${chores.length} done):\n${lines.join("\n")}`;
+  return `🧹 Chores ${label} (${chores.filter((c) => c.done).length}/${chores.length} done):\n${lines.join("\n")}`;
+}
+
+// 'YYYY-MM-DD' -> "Tue Oct 20" (dashboard-local date; noon UTC avoids tz edges).
+function dayLabel(day: string): string {
+  const parsed = Date.parse(`${day}T12:00:00Z`);
+  if (!Number.isFinite(parsed)) return day;
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC", weekday: "short", day: "numeric", month: "short"
+  });
+  return fmt.format(parsed);
+}
+
+// Every chore with its recurring schedule (not just today's occurrences).
+async function loadAllChores(admin: any): Promise<Array<{ text: string; pattern: string; days: string; once_date: string; start_min: number; end_min: number }>> {
+  const { data: rows, error } = await admin.database
+    .from("chores")
+    .select("text,pattern,days,once_date,start_min,end_min")
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (rows ?? []) as Array<{ text: string; pattern: string; days: string; once_date: string; start_min: number; end_min: number }>;
+}
+
+export function listAllChoresReply(chores: Array<{ text: string; pattern: string; days: string; once_date: string; start_min: number; end_min: number }>): string {
+  if (chores.length === 0) return "🧹 No chores scheduled. Add one: \"add chore clean kitchen every saturday\".";
+  const lines = chores.map((c) => {
+    const time = timeWindowLabel(c.start_min, c.end_min);
+    if (c.pattern === "daily") return `• ${c.text} — every day ${time}`;
+    if (c.pattern === "weekly") return `• ${c.text} — ${c.days.split(",").filter(Boolean).join(",")} ${time}`;
+    return `• ${c.text} — ${c.once_date || "today"} ${time}`;
+  });
+  return `🧹 All chores (${chores.length}):\n${lines.join("\n")}`;
 }
 
 async function applyChoreAction(admin: any, action: ChoreAction): Promise<string> {
@@ -1641,6 +1694,16 @@ function validateChoreAction(input: unknown): ChoreAction | null {
         action[key] = Math.round(value);
       }
     }
+    // An "all-day" 00:00-23:59 window from the LLM means no time was actually
+    // given — drop it so the server applies the 10:00-22:00 default.
+    if (action.start_min === 0 && (action.end_min ?? 0) >= 1439) {
+      delete action.start_min;
+      delete action.end_min;
+    }
+    if (action.start_min !== undefined && action.end_min !== undefined && action.end_min <= action.start_min) {
+      delete action.start_min;
+      delete action.end_min;
+    }
   }
   return action;
 }
@@ -1654,8 +1717,15 @@ function validateQueryAction(input: unknown): QueryAction | null {
     if (!Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) return null;
     return { kind: "query", query: "events_range", days };
   }
-  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition") {
+  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition" || candidate.query === "chores_all") {
     return { kind: "query", query: candidate.query };
+  }
+  if (candidate.query === "chores") {
+    // Optional day offset: 0 = today (default) .. 6.
+    if (candidate.days === undefined || candidate.days === null) return { kind: "query", query: "chores" };
+    const days = Number(candidate.days);
+    if (!Number.isFinite(days) || !Number.isInteger(days) || days < 0 || days > 6) return null;
+    return { kind: "query", query: "chores", days };
   }
   if (candidate.query !== "grocery" && candidate.query !== "todo" && candidate.query !== "workout" && candidate.query !== "events_today") return null;
   return { kind: "query", query: candidate.query };
