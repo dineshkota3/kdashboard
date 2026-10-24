@@ -675,9 +675,11 @@ void wizApplyParams(WizLight* light, const char* params_json, const char* params
   if (findKeyInRange(params_json, params_end, "state")) {
     light->state = extractBool(params_json, params_end, "state", light->state);
   }
-  if (extractInt(params_json, params_end, "brightness", -1) >= 0) {
-    light->brightness = extractInt(params_json, params_end, "brightness", light->brightness);
-  }
+  // New WiZ firmware reports dimming (0-100); older reports brightness.
+  const int dim = extractInt(params_json, params_end, "dimming", -1);
+  const int bri = extractInt(params_json, params_end, "brightness", -1);
+  if (dim >= 0) light->brightness = dim;
+  else if (bri >= 0) light->brightness = bri;
   if (extractInt(params_json, params_end, "temp", -1) >= 0) {
     light->temp = extractInt(params_json, params_end, "temp", light->temp);
     light->r = light->g = light->b = -1;
@@ -719,7 +721,8 @@ void wizRefreshState(WizLight* light) {
   }
   light->online = 1;
   light->state = extractBool(resp, NULL, "state", light->state);
-  light->brightness = extractInt(resp, NULL, "brightness", light->brightness);
+  const int dim = extractInt(resp, NULL, "dimming", -1);
+  light->brightness = dim >= 0 ? dim : extractInt(resp, NULL, "brightness", light->brightness);
   light->temp = extractInt(resp, NULL, "temp", light->temp);
   light->r = extractInt(resp, NULL, "r", -1);
   light->g = extractInt(resp, NULL, "g", -1);
@@ -3567,7 +3570,7 @@ int handlePendingTouch(const Options* options) {
     if (action == kTouchLightToggle) {
       snprintf(params, sizeof(params), "{\"state\":%s}", light->state ? "false" : "true");
     } else if (action == kTouchLightBrightness) {
-      snprintf(params, sizeof(params), "{\"state\":true,\"brightness\":%d}", g_pending_item_index);
+      snprintf(params, sizeof(params), "{\"state\":true,\"brightness\":%d,\"dimming\":%d}", g_pending_item_index, g_pending_item_index);
     } else if (action == kTouchLightWhite) {
       snprintf(params, sizeof(params), "{\"state\":true,\"temp\":%d}", g_pending_item_index);
     } else {

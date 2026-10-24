@@ -1822,7 +1822,12 @@ function describeDeviceParams(action: DeviceAction): string {
 async function applyDeviceAction(admin: any, action: DeviceAction): Promise<string> {
   const params: Record<string, unknown> = {};
   if (action.state !== undefined) params.state = action.state;
-  if (action.brightness !== undefined) params.brightness = action.brightness;
+  if (action.brightness !== undefined) {
+    // New WiZ firmware renamed brightness -> dimming; send both so older and
+    // newer bulbs obey.
+    params.brightness = action.brightness;
+    params.dimming = action.brightness;
+  }
   if (action.temp !== undefined) params.temp = action.temp;
   if (action.color) {
     const rgb = LIGHT_COLORS[action.color];
