@@ -1838,7 +1838,9 @@ async function applyDeviceAction(admin: any, action: DeviceAction): Promise<stri
   const { error } = await admin.database.from("device_commands").insert([{
     id: crypto.randomUUID(),
     target: (action.target || "all").slice(0, 32),
-    action: params,
+    // JSONB column: the SDK does not serialize nested objects on insert —
+    // pass explicit JSON text (otherwise the row stores "[object Object]").
+    action: JSON.stringify(params),
     source: "telegram"
   }]);
   if (error) throw error;

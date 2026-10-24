@@ -692,18 +692,21 @@ void wizApplyParams(WizLight* light, const char* params_json, const char* params
   }
 }
 
-// setPilot + optimistic local update. Returns 1 when the bulb confirmed.
+// setPilot + optimistic local update. Returns 1 only when the bulb confirmed
+// success (replies are {"result":{"success":true}} / {"succeeded":true}).
 int wizSetLight(WizLight* light, const char* params_json, const char* params_end) {
   char request[256];
   snprintf(request, sizeof(request), "{\"method\":\"setPilot\",\"params\":%.*s}",
            (int)(params_end - params_json), params_json);
   char resp[256];
-  const int ok = wizUdpExchange(light->ip, request, resp, sizeof(resp));
+  const int replied = wizUdpExchange(light->ip, request, resp, sizeof(resp));
+  const int ok = replied && strstr(resp, "succe") != NULL && strstr(resp, "true") != NULL;
+  fprintf(stderr, "wiz=set ip=%s replied=%d ok=%d resp=%.90s\n", light->ip, replied, ok, resp);
   if (ok) {
     light->online = 1;
     wizApplyParams(light, params_json, params_end);
   } else {
-    light->online = 0;
+    light->online = replied;
   }
   return ok;
 }
@@ -775,7 +778,8 @@ void wizSaveCache() {
 
 // Broadcast discovery: bulbs answer "registration" from their own IP. With
 // update=true it also refreshes the IP of known bulbs (DHCP reassigns IPs —
-// match by MAC); brand-new bulbs are appended.
+// match by MAC); brand-new bulbs are appended. Sends to both the limited and
+// the directed broadcast address (some Wi-Fi drivers drop the former).
 void wizDiscover(int update_existing) {
   const int fd = socket(AF_INET, SOCK_DGRAM, 0);
   if (fd < 0) return;
@@ -785,13 +789,38 @@ void wizDiscover(int update_existing) {
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   const int broadcast = 1;
   setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+  const char* request =
+    "{\"method\":\"registration\",\"params\":{\"phoneMac\":\"aabbccddeeff\",\"phoneIp\":\"192.168.68.103\"}}";
+
+  // Directed broadcast of this device's /24 (falls back to a CLASS C shape).
+  char directed[32] = "192.168.68.255";
+  FILE* route = popen("ifconfig 2>/dev/null | grep 'inet 192.168.' | head -1", "r");
+  if (route) {
+    char line[256];
+    while (fgets(line, sizeof(line), route)) {
+      const char* inet = strstr(line, "inet ");
+      if (!inet) continue;
+      char self_ip[16] = "";
+      if (sscanf(inet, "inet %15[^ ]", self_ip) == 1 && strchr(self_ip, '.')) {
+        char last_dot = 0;
+        char* cut = strrchr(self_ip, '.');
+        if (cut) { last_dot = *cut; *cut = '\0'; snprintf(directed, sizeof(directed), "%s.255", self_ip); }
+        (void)last_dot;
+        break;
+      }
+    }
+    pclose(route);
+  }
+
   struct sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
   addr.sin_port = htons(kWizUdpPort);
-  addr.sin_addr.s_addr = INADDR_BROADCAST;
-  const char* request = "{\"method\":\"registration\",\"params\":{\"phoneIp\":\"10.0.0.1\"}}";
-  sendto(fd, request, (int)strlen(request), 0, (struct sockaddr*)&addr, sizeof(addr));
+  const char* targets[2] = {directed, "255.255.255.255"};
+  for (int t = 0; t < 2; t++) {
+    addr.sin_addr.s_addr = inet_addr(targets[t]);
+    sendto(fd, request, (int)strlen(request), 0, (struct sockaddr*)&addr, sizeof(addr));
+  }
 
   int changed = 0;
   char resp[512];
@@ -2569,7 +2598,19 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   }
 
   doubleRect(canvas, shell_x + 10, shell_y + shell_h - footer_h - 10, shell_w - 20, footer_h, 0);
-  drawTextClipped(canvas, shell_x + 28, shell_y + shell_h - footer_h - 2, shell_w - 56, "TELEGRAM UPDATES LISTS // AUTO REFRESH 15M", 3, 0);
+  // Phase 4.2: live light status in the footer when any bulb is known.
+  char footer[128];
+  if (g_wiz_count > 0) {
+    int on = 0;
+    for (int i = 0; i < g_wiz_count; i++) {
+      if (g_wiz[i].state) on++;
+    }
+    snprintf(footer, sizeof(footer), "LIGHTS: %d/%d ON // TELEGRAM UPDATES LISTS // AUTO REFRESH 15M",
+             on, g_wiz_count);
+  } else {
+    snprintf(footer, sizeof(footer), "TELEGRAM UPDATES LISTS // AUTO REFRESH 15M");
+  }
+  drawTextClipped(canvas, shell_x + 28, shell_y + shell_h - footer_h - 2, shell_w - 56, footer, 3, 0);
 }
 
 int writePgm(const char* path, const Canvas* canvas) {
