@@ -24,6 +24,12 @@ INVERT_IMAGES="${INVERT_IMAGES:-0}"
 SCRIPT_DIR="$(dirname "$0")"
 NATIVE_APP="${NATIVE_APP:-$SCRIPT_DIR/kindle-dashboard}"
 RUN_APP="${RUN_APP:-/tmp/kindle-dashboard-native}"
+
+# Log rotation: the native app appends every render/fetch line; cap the log at
+# ~1MB and keep the most recent 200KB so it never grows unbounded.
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 1000000 ]; then
+  tail -c 200000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
 SHOW_STATUS="${DASHBOARD_SHOW_STATUS:-0}"
 
 say() {
