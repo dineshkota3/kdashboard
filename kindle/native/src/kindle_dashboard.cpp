@@ -776,6 +776,8 @@ void wizSaveCache() {
   fclose(file);
 }
 
+void wizSweepUnicast();
+
 // Broadcast discovery: bulbs answer "registration" from their own IP. With
 // update=true it also refreshes the IP of known bulbs (DHCP reassigns IPs —
 // match by MAC); brand-new bulbs are appended. Sends to both the limited and
@@ -876,6 +878,130 @@ void wizDiscover(int update_existing) {
   }
   fprintf(stderr, "wiz=discovered count=%d changed=%d\n", g_wiz_count, changed);
   if (g_wiz_count > 0 && changed) wizSaveCache();
+  if (g_wiz_count == 0 || !changed) wizSweepUnicast();
+}
+
+// Parallel unicast sweep: one getPilot per /24 host via non-blocking sockets +
+// select. Kindle Wi-Fi drops broadcast packets, but unicast always works.
+#define WIZ_SWEEP_FIRST 2
+#define WIZ_SWEEP_LAST 254
+void wizSweepUnicast() {
+  int sockets[WIZ_SWEEP_LAST + 1];
+  char ips[WIZ_SWEEP_LAST + 1][16];
+  int count = 0;
+  for (int i = WIZ_SWEEP_FIRST; i <= WIZ_SWEEP_LAST; i++) sockets[i] = -1;
+  // Subnet base: from a known bulb, else from this device's own address.
+  char base[16] = "192.168.68";
+  if (g_wiz_count > 0 && strchr(g_wiz[0].ip, '.')) {
+    snprintf(base, sizeof(base), "%s", g_wiz[0].ip);
+    char* cut = strrchr(base, '.');
+    if (cut) *cut = '\0';
+  } else {
+    FILE* route = popen("ifconfig 2>/dev/null | grep 'inet ' | head -3", "r");
+    if (route) {
+      char line[256];
+      while (fgets(line, sizeof(line), route)) {
+        char ip[16] = "";
+        if (sscanf(line, "%*s inet %15[^ ]", ip) == 1 || sscanf(line, "%*s inet addr:%15[^ ]", ip) == 1) {
+          char* cut = strrchr(ip, '.');
+          if (cut && (strstr(line, "192.168.") || strstr(line, "10.") || strstr(line, "172."))) {
+            *cut = '\0';
+            snprintf(base, sizeof(base), "%s", ip);
+            break;
+          }
+        }
+      }
+      pclose(route);
+    }
+  }
+  fprintf(stderr, "wiz=sweep base=%s\n", base);
+
+  for (int i = WIZ_SWEEP_FIRST; i <= WIZ_SWEEP_LAST; i++) {
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) continue;
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(kWizUdpPort);
+    snprintf(ips[i], sizeof(ips[i]), "%s.%d", base, i);
+    addr.sin_addr.s_addr = inet_addr(ips[i]);
+    sendto(fd, "{\"method\":\"getPilot\"}", 21, 0, (struct sockaddr*)&addr, sizeof(addr));
+    sockets[i] = fd;
+    count++;
+  }
+
+  struct timeval tv;
+  tv.tv_sec = 2;
+  tv.tv_usec = 500000;
+  int remaining = count;
+  while (remaining > 0) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    int max_fd = -1;
+    for (int i = WIZ_SWEEP_FIRST; i <= WIZ_SWEEP_LAST; i++) {
+      if (sockets[i] >= 0) { FD_SET(sockets[i], &readfds); if (sockets[i] > max_fd) max_fd = sockets[i]; }
+    }
+    if (select(max_fd + 1, &readfds, NULL, NULL, &tv) <= 0) break;
+    for (int i = WIZ_SWEEP_FIRST; i <= WIZ_SWEEP_LAST; i++) {
+      if (sockets[i] < 0 || !FD_ISSET(sockets[i], &readfds)) continue;
+      char resp[512];
+      const int n = recvfrom(sockets[i], resp, sizeof(resp) - 1, 0, NULL, NULL);
+      close(sockets[i]);
+      sockets[i] = -1;
+      remaining--;
+      if (n <= 0) continue;
+      resp[n] = '\0';
+      int known = 0;
+      WizLight* target = NULL;
+      for (int k = 0; k < g_wiz_count; k++) {
+        if (strcmp(g_wiz[k].ip, ips[i]) == 0) { known = 1; target = &g_wiz[k]; break; }
+        char mac[20];
+        extractString(resp, NULL, "mac", mac, sizeof(mac), "");
+        if (mac[0] && strcmp(g_wiz[k].mac, mac) == 0) {
+          if (strcmp(g_wiz[k].ip, ips[i]) != 0) {
+            fprintf(stderr, "wiz=ip-changed mac=%s old=%s new=%s\n", g_wiz[k].mac, g_wiz[k].ip, ips[i]);
+            snprintf(g_wiz[k].ip, sizeof(g_wiz[k].ip), "%s", ips[i]);
+          }
+          target = &g_wiz[k];
+          known = 1;
+          break;
+        }
+      }
+      if (known) {
+        if (target) wizRefreshState(target);
+        continue;
+      }
+      if (g_wiz_count >= kMaxLights) continue;
+      WizLight* light = &g_wiz[g_wiz_count];
+      memset(light, 0, sizeof(*light));
+      snprintf(light->ip, sizeof(light->ip), "%s", ips[i]);
+      extractString(resp, NULL, "mac", light->mac, sizeof(light->mac), "");
+      snprintf(light->name, sizeof(light->name), "%s", "Light");
+      light->known = 1;
+      light->online = 1;
+      light->state = 0;
+      light->brightness = 50;
+      light->temp = 2700;
+      light->r = light->g = light->b = -1;
+      wizRefreshState(light);
+      char cfg[768];
+      if (wizUdpExchange(light->ip, "{\"method\":\"getSystemConfig\"}", cfg, sizeof(cfg))) {
+        char name[40];
+        extractString(cfg, NULL, "alias", name, sizeof(name), "");
+        if (name[0]) snprintf(light->name, sizeof(light->name), "%s", name);
+      }
+      g_wiz_count++;
+    }
+  }
+  for (int i = WIZ_SWEEP_FIRST; i <= WIZ_SWEEP_LAST; i++) {
+    if (sockets[i] >= 0) close(sockets[i]);
+  }
+  fprintf(stderr, "wiz=sweep done count=%d\n", g_wiz_count);
+  if (g_wiz_count > 0) wizSaveCache();
 }
 
 // Live-mode refresh: load cache once, then pull each bulb's real state. A bulb
@@ -3898,28 +4024,41 @@ static const char* ciSubstring(const char* hay, const char* needle) {
 }
 
 void runDeviceCommands(const Options* options) {
+  fprintf(stderr, "wiz=queue-check url=%s token=%d\n",
+          options->device_queue_url[0] ? options->device_queue_url : "(none)",
+          options->read_token[0] ? 1 : 0);
   if (!options->device_queue_url[0] || !options->read_token[0]) return;
   if (!g_wiz_ready) {
     g_wiz_ready = 1;
     wizLoadCache();
     if (g_wiz_count == 0) wizDiscover(0);
   }
-  if (g_wiz_count == 0) return;
+  if (g_wiz_count == 0) {
+    fprintf(stderr, "wiz=queue-skip no-bulbs\n");
+    return;
+  }
 
   char list_path[128];
   snprintf(list_path, sizeof(list_path), "/tmp/kindle-dashboard-commands.json");
   char command[640];
-  if (commandExists("curl")) {
-    snprintf(command, sizeof(command),
-             "curl -fsSL --connect-timeout 8 --max-time 12 -H 'x-dashboard-read-token: %s' -o %s %s",
-             options->read_token, list_path, options->device_queue_url);
-    if (system(command) != 0) return;
-  } else {
+  if (!commandExists("curl")) {
+    fprintf(stderr, "wiz=queue-skip no-curl\n");
+    return;
+  }
+  snprintf(command, sizeof(command),
+           "curl -fsSL --connect-timeout 8 --max-time 12 -H 'x-dashboard-read-token: %s' -o %s %s",
+           options->read_token, list_path, options->device_queue_url);
+  const int curl_exit = system(command);
+  if (curl_exit != 0) {
+    fprintf(stderr, "wiz=queue-fetch-failed exit=%d\n", curl_exit);
     return;
   }
 
   char* payload = readFile(list_path);
-  if (!payload) return;
+  if (!payload) {
+    fprintf(stderr, "wiz=queue-read-failed\n");
+    return;
+  }
 
   const char* commands_value = findKeyInRange(payload, NULL, "commands");
   if (commands_value && *commands_value == '[') {
@@ -3935,30 +4074,42 @@ void runDeviceCommands(const Options* options) {
       char target[40];
       extractString(object_start, object_end, "id", id, sizeof(id), "");
       extractString(object_start, object_end, "target", target, sizeof(target), "all");
-      const char* action_value = findKeyInRange(object_start, object_end, "action");
-      const char* action_end = action_value ? matchingClose(action_value, '}') : NULL;
+
+      // action arrives either as a nested object or as a JSON string
+      // ("{\"state\":false}") depending on how the row was written.
+      char action_text[256];
+      extractString(object_start, object_end, "action", action_text, sizeof(action_text), "");
+      const char* params_json = action_text;
+      const char* params_end = action_text + strlen(action_text);
+      if (!params_json[0]) {
+        const char* action_value = findKeyInRange(object_start, object_end, "action");
+        if (action_value && *action_value == '{') {
+          params_json = action_value;
+          params_end = matchingClose(action_value, '}');
+        }
+      }
+
       int delivered = 0;
-      if (id[0] && action_value && action_end && *action_value == '{') {
+      if (id[0] && params_end > params_json) {
         for (int i = 0; i < g_wiz_count && !delivered; i++) {
           WizLight* light = &g_wiz[i];
           if (strcmp(target, "all") != 0 && light->name[0] &&
               !ciSubstring(light->name, target) && !ciSubstring(target, light->name)) {
             continue;
           }
-          delivered = wizSetLight(light, action_value, action_end);
+          delivered = wizSetLight(light, params_json, params_end);
         }
       }
       if (id[0]) {
-        const char* ack_body = delivered ? "{\"id\":\"%s\",\"ok\":true}" : "{\"id\":\"%s\",\"ok\":false}";
-        char body[128];
-        snprintf(body, sizeof(body), ack_body, id);
+        char body[160];
+        snprintf(body, sizeof(body), "{\"id\":\"%s\",\"ok\":%s}", id, delivered ? "true" : "false");
         char ack_command[640];
         snprintf(ack_command, sizeof(ack_command),
                  "curl -fsSL --connect-timeout 8 --max-time 12 -X POST -H 'Content-Type: application/json' "
                  "-H 'x-dashboard-read-token: %s' -d '%s' %s >/dev/null 2>&1 &",
                  options->read_token, body, options->device_queue_url);
         if (commandExists("curl")) system(ack_command);
-        fprintf(stderr, "wiz=command id=%s target=%s delivered=%d\n", id, target, delivered);
+        fprintf(stderr, "wiz=command id=%s target=%s delivered=%d params=%.60s\n", id, target, delivered, params_json);
       }
       cursor = object_end + 1;
     }
