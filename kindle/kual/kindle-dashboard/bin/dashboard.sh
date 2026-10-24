@@ -8,6 +8,7 @@ DASHBOARD_EVENTS_URL="${DASHBOARD_EVENTS_URL:-}"
 DASHBOARD_TOGGLE_URL="${DASHBOARD_TOGGLE_URL:-}"
 DASHBOARD_READ_TOKEN="${DASHBOARD_READ_TOKEN:-}"
 DASHBOARD_TOGGLE_TOKEN="${DASHBOARD_TOGGLE_TOKEN:-}"
+DEVICE_QUEUE_URL="${DEVICE_QUEUE_URL:-}"
 CACHE="${CACHE:-/mnt/us/documents/kindle-dashboard-data.json}"
 LOG="${LOG:-/mnt/us/documents/kindle-dashboard-native.log}"
 PIDFILE="${PIDFILE:-/mnt/us/documents/kindle-dashboard-native.pid}"
@@ -103,6 +104,7 @@ start_dashboard() {
     --url "$DASHBOARD_DATA_URL" \
     --events-url "$DASHBOARD_EVENTS_URL" \
     --toggle-url "$DASHBOARD_TOGGLE_URL" \
+    --device-queue-url "$DEVICE_QUEUE_URL" \
     --read-token "$DASHBOARD_READ_TOKEN" \
     --toggle-token "$DASHBOARD_TOGGLE_TOKEN" \
     --cache "$CACHE" \

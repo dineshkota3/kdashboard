@@ -13,6 +13,7 @@ import {
   parseQueryMessage,
   parseEventRangeDays,
   parseChoreAction,
+  parseDeviceAction,
   listAllChoresReply,
   choreWeekdayOf,
   addDaysIso,
@@ -867,4 +868,66 @@ test("question-shaped chore mentions never become chore adds (fallback path)", (
   // adds still work
   const add = parseFastHeuristicMessage("add chore clean kitchen every saturday") as any;
   assert.equal(add.kind, "chore");
+});
+
+// ---- phase 4.2: smart-home lights (WiZ) ----
+
+test("device parser: on/off with and without targets", () => {
+  const on = parseDeviceAction("lights on") as any;
+  assert.equal(on.kind, "device");
+  assert.equal(on.state, true);
+  assert.equal(on.target, "all");
+  const off = parseDeviceAction("turn the lights off") as any;
+  assert.equal(off.state, false);
+  const bedroom = parseDeviceAction("bedroom light off") as any;
+  assert.equal(bedroom.target, "bedroom");
+  assert.equal(bedroom.state, false);
+});
+
+test("device parser: brightness, white temperature, colors, night light", () => {
+  const dim = parseDeviceAction("dim lights to 50") as any;
+  assert.equal(dim.brightness, 50);
+  assert.equal(dim.state, true);
+  const warm = parseDeviceAction("lights warm") as any;
+  assert.equal(warm.temp, 2700);
+  const cool = parseDeviceAction("lights cool white") as any;
+  assert.equal(cool.temp, 5700);
+  const blue = parseDeviceAction("lights blue") as any;
+  assert.equal(blue.color, "blue");
+  const night = parseDeviceAction("night light") as any;
+  assert.equal(night.brightness, 6);
+  assert.equal(night.temp, 2200);
+  assert.equal(night.state, true);
+});
+
+test("device parser: junk and out-of-scope messages stay null", () => {
+  assert.equal(parseDeviceAction("add milk to groceries"), null); // explicit list wins
+  assert.equal(parseDeviceAction("are the lights on?"), null);    // status -> query
+  assert.equal(parseDeviceAction("lighthouse visit tomorrow"), null);
+  assert.equal(parseDeviceAction("dim lights to 500"), null);     // >100
+});
+
+test("lights status question routes to device_status query", () => {
+  assert.equal(parseQueryMessage("are the lights on")?.query, "device_status");
+  assert.equal(parseQueryMessage("light status")?.query, "device_status");
+  assert.equal(validateTelegramAction({ kind: "query", query: "device_status" })?.query, "device_status");
+});
+
+test("validateDeviceAction clamps, rejects bad payloads, requires a param", () => {
+  const ok = validateTelegramAction({ kind: "device", action: "set", target: "Bedroom", state: false }) as any;
+  assert.equal(ok.target, "bedroom");
+  assert.equal(validateTelegramAction({ kind: "device", action: "set", brightness: 250 }), null);
+  assert.equal(validateTelegramAction({ kind: "device", action: "set", temp: 100 }), null);
+  assert.equal(validateTelegramAction({ kind: "device", action: "set", color: "pink" }), null);
+  assert.equal(validateTelegramAction({ kind: "device", action: "set", target: "all" }), null); // no params
+  const full = validateTelegramAction({
+    kind: "device", action: "set", state: true, brightness: 80, temp: 2700, color: "blue"
+  }) as any;
+  assert.equal(full.brightness, 80);
+  assert.equal(full.color, "blue");
+});
+
+test("PLANNER_SYSTEM_PROMPT documents device actions", () => {
+  assert.match(PLANNER_SYSTEM_PROMPT, /SMART-HOME LIGHTS/);
+  assert.match(PLANNER_SYSTEM_PROMPT, /"kind":"device"/);
 });

@@ -4,6 +4,7 @@
 DASHBOARD_DATA_URL="https://your-project.insforge.app/functions/kindle-dashboard-data"
 DASHBOARD_EVENTS_URL="https://your-project.function2.insforge.app/kindle-dashboard-events"
 DASHBOARD_TOGGLE_URL="https://your-project.insforge.app/functions/kindle-dashboard-toggle"
+DEVICE_QUEUE_URL="https://your-project.insforge.app/functions/kindle-device-queue"
 DASHBOARD_READ_TOKEN="replace-with-your-generated-read-token"
 DASHBOARD_TOGGLE_TOKEN="replace-with-your-generated-toggle-token"
 

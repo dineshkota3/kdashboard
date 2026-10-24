@@ -36,6 +36,7 @@ type DashboardData = {
   tasks: PregnancyTask[];
   chores: ChoreRow[];
   choreDones: Array<{ chore_id: string; day: string }>;
+  pendingCommands: number;
   pregnancyWeek: number;
   pregnancyDay: number;
 };
@@ -123,7 +124,7 @@ async function loadDashboardData(): Promise<DashboardData> {
   const today = dashboardLocalDate();
 
   const baseStarted = timeMs();
-  const [itemsResult, tasksResult, choresResult, choresDoneResult] = await Promise.all([
+  const [itemsResult, tasksResult, choresResult, choresDoneResult, commandsResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,created_at,updated_at")
@@ -139,7 +140,13 @@ async function loadDashboardData(): Promise<DashboardData> {
     admin.database
       .from("chore_dones")
       .select("chore_id,day")
-      .gte("day", addLocalDays(today, -1))
+      .gte("day", addLocalDays(today, -1)),
+    // Phase 4.2: pending smart-home commands nudge the Kindle via the hash.
+    admin.database
+      .from("device_commands")
+      .select("id", { count: "exact" })
+      .eq("status", "pending")
+      .limit(1)
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
 
@@ -155,11 +162,15 @@ async function loadDashboardData(): Promise<DashboardData> {
   const { data: choreDones, error: choresDoneError } = choresDoneResult;
   if (choresDoneError) throw choresDoneError;
 
+  const { count: pendingCommands, error: commandsError } = commandsResult;
+  if (commandsError) throw commandsError;
+
   const payload = {
     items: items as PlannerItem[],
     tasks: tasks as PregnancyTask[],
     chores: (chores ?? []) as ChoreRow[],
     choreDones: choreDones ?? [],
+    pendingCommands: pendingCommands ?? 0,
     ...pregnancyProgress(today)
   };
   logTiming("kindle-dashboard-events", {
@@ -190,6 +201,7 @@ function getDashboardVersion(data: DashboardData): string {
     tasks: [...data.tasks].sort((a, b) => a.key.localeCompare(b.key)),
     chores: [...data.chores].sort((a, b) => a.id.localeCompare(b.id)),
     choreDones: [...data.choreDones].sort((a, b) => `${a.day}${a.chore_id}`.localeCompare(`${b.day}${b.chore_id}`)),
+    pendingCommands: data.pendingCommands,
     pregnancyWeek: data.pregnancyWeek,
     pregnancyDay: data.pregnancyDay
   }));

@@ -346,5 +346,8 @@
     { "id": "todo-1", "text": "BUY PRENATAL VITAMINS", "done": false },
     { "id": "todo-2", "text": "BOOK KRAAMZORG TOUR", "done": false },
     { "id": "todo-3", "text": "PICK UP FOLIUMZUUR REFILL", "done": true }
+  ],
+  "lights": [
+    { "ip": "192.168.68.50", "name": "Living Room", "state": true, "brightness": 80, "temp": 2700, "online": true }
   ]
 }

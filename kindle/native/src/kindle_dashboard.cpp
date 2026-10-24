@@ -10,6 +10,9 @@
 #include <pthread.h>
 #include <sys/time.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #ifdef __linux__
 #include <linux/input.h>
 #include <linux/fb.h>
@@ -64,7 +67,12 @@ enum TouchAction {
   kTouchScreenPrev = 16,
   kTouchOpenPregnancy = 17,
   kTouchOpenTimeline = 20,
-  kTouchOpenChores = 21
+  kTouchOpenChores = 21,
+  kTouchOpenLights = 22,
+  kTouchLightToggle = 23,
+  kTouchLightBrightness = 24,
+  kTouchLightWhite = 25,
+  kTouchLightColor = 26
 };
 
 struct Item {
@@ -146,6 +154,22 @@ struct Chore {
   int overdue;
 };
 
+const int kMaxLights = 4;
+
+// Phase 4.2: WiZ bulb (LAN UDP 38899). Fixture payloads carry the status
+// fields; in live mode discovery + getPilot fill them on-device.
+struct WizLight {
+  char ip[16];
+  char mac[20];
+  char name[32];
+  int known;      // has a usable ip
+  int online;
+  int state;
+  int brightness; // 0-100
+  int temp;       // Kelvin (2200-6500)
+  int r, g, b;
+};
+
 struct PregnancyMilestone {
   int week;
   char label[40];
@@ -180,13 +204,22 @@ struct Dashboard {
   int todo_count;
   Chore chores[kMaxChores];
   int chore_count;
+  WizLight lights[kMaxLights];
+  int light_count;
   NutritionStrip nutrition;
 };
+
+// Phase 4.2: live WiZ bulb state (LAN UDP). Fixtures instead carry "lights" in
+// the payload; this array is what the device actually controls.
+WizLight g_wiz[kMaxLights];
+int g_wiz_count = 0;
+int g_wiz_ready = 0;            // discovery/load attempted once
 
 struct Options {
   char url[256];
   char events_url[256];
   char toggle_url[256];
+  char device_queue_url[256];
   char read_token[160];
   char toggle_token[160];
   char cache[256];
@@ -606,6 +639,257 @@ void parseChores(const char* chores_value, const char* chores_end, Dashboard* da
   }
 }
 
+// ---- Phase 4.2: WiZ lights (LAN UDP 38899) ----
+
+const int kWizUdpPort = 38899;
+
+// One UDP JSON exchange; 1s reply timeout. Returns 1 when a reply arrived.
+int wizUdpExchange(const char* ip, const char* request, char* resp, int resp_cap) {
+  if (!ip || !ip[0]) return 0;
+  const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) return 0;
+  struct timeval tv;
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(kWizUdpPort);
+  addr.sin_addr.s_addr = inet_addr(ip);
+  const int sent = sendto(fd, request, (int)strlen(request), 0, (struct sockaddr*)&addr, sizeof(addr));
+  int n = 0;
+  if (sent > 0) {
+    n = recvfrom(fd, resp, resp_cap - 1, 0, NULL, NULL);
+  }
+  close(fd);
+  if (n <= 0) {
+    if (resp_cap > 0) resp[0] = '\0';
+    return 0;
+  }
+  resp[n] = '\0';
+  return 1;
+}
+
+void wizApplyParams(WizLight* light, const char* params_json, const char* params_end) {
+  if (findKeyInRange(params_json, params_end, "state")) {
+    light->state = extractBool(params_json, params_end, "state", light->state);
+  }
+  if (extractInt(params_json, params_end, "brightness", -1) >= 0) {
+    light->brightness = extractInt(params_json, params_end, "brightness", light->brightness);
+  }
+  if (extractInt(params_json, params_end, "temp", -1) >= 0) {
+    light->temp = extractInt(params_json, params_end, "temp", light->temp);
+    light->r = light->g = light->b = -1;
+  }
+  const int r = extractInt(params_json, params_end, "r", -1);
+  const int g = extractInt(params_json, params_end, "g", -1);
+  const int b = extractInt(params_json, params_end, "b", -1);
+  if (r >= 0 && g >= 0 && b >= 0) {
+    light->r = r;
+    light->g = g;
+    light->b = b;
+  }
+}
+
+// setPilot + optimistic local update. Returns 1 when the bulb confirmed.
+int wizSetLight(WizLight* light, const char* params_json, const char* params_end) {
+  char request[256];
+  snprintf(request, sizeof(request), "{\"method\":\"setPilot\",\"params\":%.*s}",
+           (int)(params_end - params_json), params_json);
+  char resp[256];
+  const int ok = wizUdpExchange(light->ip, request, resp, sizeof(resp));
+  if (ok) {
+    light->online = 1;
+    wizApplyParams(light, params_json, params_end);
+  } else {
+    light->online = 0;
+  }
+  return ok;
+}
+
+void wizRefreshState(WizLight* light) {
+  char resp[512];
+  if (!wizUdpExchange(light->ip, "{\"method\":\"getPilot\"}", resp, sizeof(resp))) {
+    light->online = 0;
+    return;
+  }
+  light->online = 1;
+  light->state = extractBool(resp, NULL, "state", light->state);
+  light->brightness = extractInt(resp, NULL, "brightness", light->brightness);
+  light->temp = extractInt(resp, NULL, "temp", light->temp);
+  light->r = extractInt(resp, NULL, "r", -1);
+  light->g = extractInt(resp, NULL, "g", -1);
+  light->b = extractInt(resp, NULL, "b", -1);
+}
+
+const char* kWizCachePath = "/mnt/us/documents/kindle-dashboard-wiz.txt";
+// One bulb per line: ip|mac|name
+
+void wizLoadCache() {
+  FILE* file = fopen(kWizCachePath, "r");
+  if (!file) return;
+  char line[128];
+  while (fgets(line, sizeof(line), file) && g_wiz_count < kMaxLights) {
+    char* nl = strchr(line, '\n');
+    if (nl) *nl = '\0';
+    char* sep1 = strchr(line, '|');
+    if (!sep1) continue;
+    char* sep2 = strchr(sep1 + 1, '|');
+    WizLight* light = &g_wiz[g_wiz_count];
+    memset(light, 0, sizeof(*light));
+    const int ip_len = (int)(sep1 - line);
+    if (ip_len <= 0 || ip_len >= (int)sizeof(light->ip)) continue;
+    memcpy(light->ip, line, ip_len);
+    light->ip[ip_len] = '\0';
+    if (sep2) {
+      const int mac_len = (int)(sep2 - sep1 - 1);
+      if (mac_len > 0 && mac_len < (int)sizeof(light->mac)) {
+        memcpy(light->mac, sep1 + 1, mac_len);
+        light->mac[mac_len] = '\0';
+      }
+      snprintf(light->name, sizeof(light->name), "%s", sep2 + 1);
+    } else {
+      snprintf(light->name, sizeof(light->name), "%s", "Light");
+    }
+    light->known = 1;
+    light->online = 1;
+    light->state = 0;
+    light->brightness = 50;
+    light->temp = 2700;
+    light->r = light->g = light->b = -1;
+    g_wiz_count++;
+  }
+  fclose(file);
+  fprintf(stderr, "wiz=cache-loaded count=%d\n", g_wiz_count);
+}
+
+void wizSaveCache() {
+  FILE* file = fopen(kWizCachePath, "w");
+  if (!file) return;
+  for (int i = 0; i < g_wiz_count; i++) {
+    fprintf(file, "%s|%s|%s\n", g_wiz[i].ip, g_wiz[i].mac[0] ? g_wiz[i].mac : "-", g_wiz[i].name);
+  }
+  fclose(file);
+}
+
+// Broadcast discovery: bulbs answer "registration" from their own IP. With
+// update=true it also refreshes the IP of known bulbs (DHCP reassigns IPs —
+// match by MAC); brand-new bulbs are appended.
+void wizDiscover(int update_existing) {
+  const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) return;
+  struct timeval tv;
+  tv.tv_sec = 2;
+  tv.tv_usec = 0;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  const int broadcast = 1;
+  setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(kWizUdpPort);
+  addr.sin_addr.s_addr = INADDR_BROADCAST;
+  const char* request = "{\"method\":\"registration\",\"params\":{\"phoneIp\":\"10.0.0.1\"}}";
+  sendto(fd, request, (int)strlen(request), 0, (struct sockaddr*)&addr, sizeof(addr));
+
+  int changed = 0;
+  char resp[512];
+  for (int replies = 0; replies < 8; replies++) {
+    struct sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    const int n = recvfrom(fd, resp, sizeof(resp) - 1, 0, (struct sockaddr*)&from, &from_len);
+    if (n <= 0) break;
+    resp[n] = '\0';
+    char ip[16];
+    snprintf(ip, sizeof(ip), "%s", inet_ntoa(from.sin_addr));
+    char mac[20];
+    extractString(resp, NULL, "mac", mac, sizeof(mac), "");
+
+    WizLight* match = NULL;
+    for (int i = 0; i < g_wiz_count; i++) {
+      if (strcmp(g_wiz[i].ip, ip) == 0) { match = &g_wiz[i]; break; }
+      if (mac[0] && g_wiz[i].mac[0] && strcmp(g_wiz[i].mac, mac) == 0) { match = &g_wiz[i]; break; }
+    }
+    if (match) {
+      if (strcmp(match->ip, ip) != 0) {
+        fprintf(stderr, "wiz=ip-changed mac=%s old=%s new=%s\n", match->mac, match->ip, ip);
+        snprintf(match->ip, sizeof(match->ip), "%s", ip);
+        changed = 1;
+      }
+      continue;
+    }
+    if (g_wiz_count >= kMaxLights) continue;
+    WizLight* light = &g_wiz[g_wiz_count];
+    memset(light, 0, sizeof(*light));
+    snprintf(light->ip, sizeof(light->ip), "%s", ip);
+    snprintf(light->mac, sizeof(light->mac), "%s", mac);
+    snprintf(light->name, sizeof(light->name), "%s", "Light");
+    light->known = 1;
+    light->online = 1;
+    light->state = 0;
+    light->brightness = 50;
+    light->temp = 2700;
+    light->r = light->g = light->b = -1;
+    g_wiz_count++;
+    changed = 1;
+  }
+  close(fd);
+  // Friendly names come from getSystemConfig; best-effort (only for nameless).
+  for (int i = 0; i < g_wiz_count; i++) {
+    if (update_existing && strcmp(g_wiz[i].name, "Light") != 0) continue;
+    char resp2[768];
+    if (wizUdpExchange(g_wiz[i].ip, "{\"method\":\"getSystemConfig\"}", resp2, sizeof(resp2))) {
+      char name[40];
+      extractString(resp2, NULL, "alias", name, sizeof(name), "");
+      if (name[0]) snprintf(g_wiz[i].name, sizeof(g_wiz[i].name), "%s", name);
+    }
+  }
+  fprintf(stderr, "wiz=discovered count=%d changed=%d\n", g_wiz_count, changed);
+  if (g_wiz_count > 0 && changed) wizSaveCache();
+}
+
+// Live-mode refresh: load cache once, then pull each bulb's real state. A bulb
+// that went offline triggers re-discovery (its DHCP lease may have moved it).
+void wizRefreshAll() {
+  if (!g_wiz_ready) {
+    g_wiz_ready = 1;
+    wizLoadCache();
+    if (g_wiz_count == 0) wizDiscover(0);
+  }
+  int offline = 0;
+  for (int i = 0; i < g_wiz_count; i++) {
+    wizRefreshState(&g_wiz[i]);
+    if (!g_wiz[i].online) offline = 1;
+  }
+  if (offline) wizDiscover(1);
+}
+
+void parseLights(const char* lights_value, const char* lights_end, Dashboard* dashboard) {
+  const char* cursor = lights_value + 1;
+  while (cursor < lights_end && dashboard->light_count < kMaxLights) {
+    const char* object_start = strchr(cursor, '{');
+    if (!object_start || object_start >= lights_end) break;
+    const char* object_end = matchingClose(object_start, '}');
+    if (!object_end || object_end > lights_end) break;
+
+    WizLight* light = &dashboard->lights[dashboard->light_count];
+    memset(light, 0, sizeof(*light));
+    extractString(object_start, object_end, "ip", light->ip, sizeof(light->ip), "");
+    extractString(object_start, object_end, "name", light->name, sizeof(light->name), "Light");
+    light->known = light->ip[0] != '\0';
+    light->online = extractBool(object_start, object_end, "online", 1);
+    light->state = extractBool(object_start, object_end, "state", 0);
+    light->brightness = extractInt(object_start, object_end, "brightness", 50);
+    light->temp = extractInt(object_start, object_end, "temp", 2700);
+    light->r = extractInt(object_start, object_end, "r", -1);
+    light->g = extractInt(object_start, object_end, "g", -1);
+    light->b = extractInt(object_start, object_end, "b", -1);
+    if (light->name[0]) dashboard->light_count++;
+    cursor = object_end + 1;
+  }
+}
+
 int parseDashboard(const char* json, Dashboard* dashboard) {
   memset(dashboard, 0, sizeof(*dashboard));
 
@@ -642,6 +926,14 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
     const char* chores_end = matchingClose(chores_value, ']');
     if (chores_end) {
       parseChores(chores_value, chores_end, dashboard);
+    }
+  }
+
+  const char* lights_value = findKeyInRange(json, NULL, "lights");
+  if (lights_value && *lights_value == '[') {
+    const char* lights_end = matchingClose(lights_value, ']');
+    if (lights_end) {
+      parseLights(lights_value, lights_end, dashboard);
     }
   }
 
@@ -2008,6 +2300,113 @@ void drawChoresDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   }
 }
 
+// Phase 4.2: LIGHTS screen — WiZ bulb cards with live state. Renders from
+// dashboard->lights (fixture) or the live g_wiz array (device).
+static const WizLight* lightsForView(const Dashboard* dashboard, int* count) {
+  if (dashboard->light_count > 0) {
+    *count = dashboard->light_count;
+    return dashboard->lights;
+  }
+  *count = g_wiz_count;
+  return g_wiz;
+}
+
+void drawLightsDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
+  clearCanvas(canvas, 255);
+  clearTouchRegions();
+  g_last_screen_width = canvas->width;
+  g_last_screen_height = canvas->height;
+  const int shell_w = canvas->width;
+  const int shell_x = 0;
+  const int shell_y = kKindleStatusBarHeight;
+  const int shell_h = canvas->height - shell_y;
+  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
+  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
+
+  const int sub_y = shell_y + 10 + 132 + 8;
+  drawSubHeader(canvas, shell_x, sub_y, shell_w, "LIGHTS");
+
+  int count = 0;
+  const WizLight* lights = lightsForView(dashboard, &count);
+  fprintf(stderr, "render=lights count=%d\n", count);
+
+  if (count == 0) {
+    drawTextCentered(canvas, shell_x + shell_w / 2, sub_y + 150, shell_w - 44, "NO LIGHTS FOUND", 3, 0);
+    drawTextCentered(canvas, shell_x + shell_w / 2, sub_y + 200, shell_w - 44, "CHECK BULB POWER + WI-FI", 2, 0);
+    return;
+  }
+
+  const int card_x = shell_x + 18;
+  const int card_w = shell_w - 36;
+  const int card_gap = 14;
+  int card_h = ((shell_y + shell_h - 24) - (sub_y + 112) - card_gap * (count - 1)) / count;
+  if (card_h > 330) card_h = 330; // one bulb: keep the card compact, not a full page
+  if (card_h < 160) card_h = 160;
+  int y = sub_y + 112;
+  for (int i = 0; i < count; i++) {
+    const WizLight* light = &lights[i];
+    strokeRect(canvas, card_x, y, card_w, card_h, 3, 0);
+
+    char title[96];
+    char name_upper[40];
+    upperCopy(name_upper, sizeof(name_upper), light->name);
+    if (!light->online) {
+      snprintf(title, sizeof(title), "%s  -  OFFLINE", name_upper);
+    } else if (light->r >= 0 && light->g >= 0 && light->b >= 0) {
+      snprintf(title, sizeof(title), "%s  -  %s RGB %d,%d,%d", name_upper,
+               light->state ? "ON" : "OFF", light->r, light->g, light->b);
+    } else {
+      snprintf(title, sizeof(title), "%s  -  %s %d%% %dK", name_upper,
+               light->state ? "ON" : "OFF", light->brightness, light->temp);
+    }
+    drawTextClipped(canvas, card_x + 16, y + 16, card_w - 170, title, 3, 0);
+
+    // ON/OFF toggle (right side of the card)
+    const int tog_w = 130;
+    const int tog_h = 52;
+    const int tog_x = card_x + card_w - tog_w - 14;
+    strokeRect(canvas, tog_x, y + 10, tog_w, tog_h, 2, 0);
+    drawTextCentered(canvas, tog_x + tog_w / 2, y + 24, tog_w - 12, light->state ? "ON" : "OFF", 3, 0);
+    addTouchRegion(Rect{tog_x, y + 10, tog_w, tog_h}, kTouchLightToggle, i, -1, "", 0);
+
+    // Brightness row
+    const int row_y = y + 78;
+    drawTextClipped(canvas, card_x + 16, row_y + 10, 110, "BRIGHT", 2, 0);
+    const int step_w = (card_w - 160 - 32) / 4;
+    const int steps[4] = {25, 50, 75, 100};
+    for (int s = 0; s < 4; s++) {
+      const int bx = card_x + 130 + s * (step_w + 8);
+      char label[12];
+      snprintf(label, sizeof(label), "%d%%", steps[s]);
+      strokeRect(canvas, bx, row_y, step_w, 44, 2, 0);
+      drawTextCentered(canvas, bx + step_w / 2, row_y + 13, step_w - 8, label, 2, 0);
+      addTouchRegion(Rect{bx, row_y, step_w, 44}, kTouchLightBrightness, i, steps[s], "", 0);
+    }
+
+    // White temperature + color presets row
+    const int row2_y = row_y + 56;
+    const int btn_w = (card_w - 160 - 32) / 6;
+    const char* whites[2] = {"WARM", "COOL"};
+    const int temps[2] = {2700, 5700};
+    for (int w = 0; w < 2; w++) {
+      const int bx = card_x + 130 + w * (btn_w + 8);
+      strokeRect(canvas, bx, row2_y, btn_w, 44, 2, 0);
+      drawTextCentered(canvas, bx + btn_w / 2, row2_y + 13, btn_w - 6, whites[w], 2, 0);
+      addTouchRegion(Rect{bx, row2_y, btn_w, 44}, kTouchLightWhite, i, temps[w], "", 0);
+    }
+    const char* colors[4] = {"RED", "GREEN", "BLUE", "NIGHT"};
+    for (int c = 0; c < 4; c++) {
+      const int bx = card_x + 130 + (2 + c) * (btn_w + 8);
+      strokeRect(canvas, bx, row2_y, btn_w, 44, 2, 0);
+      drawTextCentered(canvas, bx + btn_w / 2, row2_y + 13, btn_w - 6, colors[c], 2, 0);
+      // color index 3 = night light (dim warm)
+      addTouchRegion(Rect{bx, row2_y, btn_w, 44}, kTouchLightColor, i, c, "", 0);
+    }
+
+    y += card_h + card_gap;
+  }
+}
+
 void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
   if (g_active_calendar) {
     drawFullCalendarDashboard(canvas, dashboard, status);
@@ -2021,6 +2420,7 @@ void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char
     case 1: drawPregnancyDashboard(canvas, dashboard, status); return;
     case 2: drawCareTimelineDashboard(canvas, dashboard, status); return;
     case 3: drawChoresDashboard(canvas, dashboard, status); return;
+    case 4: drawLightsDashboard(canvas, dashboard, status); return;
     default: drawBitmapDashboard(canvas, dashboard, status);
   }
 }
@@ -2095,11 +2495,22 @@ void drawBitmapDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   // Phase 4 screen shortcuts (visible buttons — swipes stay as a bonus)
   {
     const int btn_y = shell_y + 30;
-    const int btn_w = 170;
+    const int btn_w = 130;
     const int btn_h = 54;
-    const int timeline_x = arrow_left - btn_w - 14;
-    const int pregnancy_x = timeline_x - btn_w - 10;
-    if (pregnancy_x > shell_x + 280) {
+    const int timeline_x = arrow_left - btn_w - 8;
+    const int pregnancy_x = timeline_x - btn_w - 8;
+    const int lights_x = pregnancy_x - btn_w - 8;
+    if (lights_x > shell_x + 240) {
+      strokeRect(canvas, pregnancy_x, btn_y, btn_w, btn_h, 2, 0);
+      drawTextCentered(canvas, pregnancy_x + btn_w / 2, btn_y + 16, btn_w - 8, "PREG", 2, 0);
+      addTouchRegion(Rect{pregnancy_x, btn_y, btn_w, btn_h}, kTouchOpenPregnancy, -1, -1, "", 0);
+      strokeRect(canvas, timeline_x, btn_y, btn_w, btn_h, 2, 0);
+      drawTextCentered(canvas, timeline_x + btn_w / 2, btn_y + 16, btn_w - 8, "TIME", 2, 0);
+      addTouchRegion(Rect{timeline_x, btn_y, btn_w, btn_h}, kTouchOpenTimeline, -1, -1, "", 0);
+      strokeRect(canvas, lights_x, btn_y, btn_w, btn_h, 2, 0);
+      drawTextCentered(canvas, lights_x + btn_w / 2, btn_y + 16, btn_w - 8, "LIGHTS", 2, 0);
+      addTouchRegion(Rect{lights_x, btn_y, btn_w, btn_h}, kTouchOpenLights, -1, -1, "", 0);
+    } else if (pregnancy_x > shell_x + 280) {
       strokeRect(canvas, pregnancy_x, btn_y, btn_w, btn_h, 2, 0);
       drawTextCentered(canvas, pregnancy_x + btn_w / 2, btn_y + 16, btn_w - 12, "PREGNANCY", 2, 0);
       addTouchRegion(Rect{pregnancy_x, btn_y, btn_w, btn_h}, kTouchOpenPregnancy, -1, -1, "", 0);
@@ -2971,6 +3382,40 @@ int handlePendingTouch(const Options* options) {
     return 1;
   }
 
+  if (action == kTouchOpenLights) {
+    fprintf(stderr, "touch=open-lights\n");
+    g_active_list = -1;
+    g_active_screen = 4;
+    wizRefreshAll();
+    return 1;
+  }
+
+  // Phase 4.2: light commands — optimistic state + real UDP setPilot.
+  if (action == kTouchLightToggle || action == kTouchLightBrightness ||
+      action == kTouchLightWhite || action == kTouchLightColor) {
+    if (g_pending_list_index < 0 || g_pending_list_index >= g_wiz_count) return 0;
+    WizLight* light = &g_wiz[g_pending_list_index];
+    if (!light->known || !light->ip[0]) return 0;
+    char params[128];
+    if (action == kTouchLightToggle) {
+      snprintf(params, sizeof(params), "{\"state\":%s}", light->state ? "false" : "true");
+    } else if (action == kTouchLightBrightness) {
+      snprintf(params, sizeof(params), "{\"state\":true,\"brightness\":%d}", g_pending_item_index);
+    } else if (action == kTouchLightWhite) {
+      snprintf(params, sizeof(params), "{\"state\":true,\"temp\":%d}", g_pending_item_index);
+    } else {
+      switch (g_pending_item_index) {
+        case 0: snprintf(params, sizeof(params), "{\"state\":true,\"r\":255,\"g\":30,\"b\":30}"); break;
+        case 1: snprintf(params, sizeof(params), "{\"state\":true,\"r\":40,\"g\":220,\"b\":80}"); break;
+        case 2: snprintf(params, sizeof(params), "{\"state\":true,\"r\":60,\"g\":110,\"b\":255}"); break;
+        default: snprintf(params, sizeof(params), "{\"state\":true,\"brightness\":6,\"temp\":2200}"); break;
+      }
+    }
+    fprintf(stderr, "wiz=set index=%d params=%s\n", g_pending_list_index, params);
+    wizSetLight(light, params, params + strlen(params));
+    return 1;
+  }
+
   if (action == kTouchOpenList) {
     fprintf(stderr, "touch=open-list index=%d\n", g_pending_list_index);
     g_active_calendar = 0;
@@ -3316,6 +3761,8 @@ void applyInitialView(const char* view) {
     g_active_calendar = 1;
   } else if (strcmp(view, "chores") == 0) {
     g_active_screen = 3;
+  } else if (strcmp(view, "lights") == 0) {
+    g_active_screen = 4;
   } else if (strcmp(view, "workout") == 0) {
     g_active_list = 1;
   } else if (strcmp(view, "grocery") == 0) {
@@ -3331,6 +3778,7 @@ void initOptions(Options* options) {
   copyText(options->url, sizeof(options->url), kDefaultUrl);
   copyText(options->events_url, sizeof(options->events_url), kDefaultEventsUrl);
   copyText(options->toggle_url, sizeof(options->toggle_url), kDefaultToggleUrl);
+  options->device_queue_url[0] = '\0';
   options->read_token[0] = '\0';
   options->toggle_token[0] = '\0';
   copyText(options->cache, sizeof(options->cache), kDefaultCache);
@@ -3352,6 +3800,7 @@ int parseOptions(int argc, char** argv, Options* options) {
     if (strcmp(argv[i], "--url") == 0 && i + 1 < argc) copyText(options->url, sizeof(options->url), argv[++i]);
     else if (strcmp(argv[i], "--events-url") == 0 && i + 1 < argc) copyText(options->events_url, sizeof(options->events_url), argv[++i]);
     else if (strcmp(argv[i], "--toggle-url") == 0 && i + 1 < argc) copyText(options->toggle_url, sizeof(options->toggle_url), argv[++i]);
+    else if (strcmp(argv[i], "--device-queue-url") == 0 && i + 1 < argc) copyText(options->device_queue_url, sizeof(options->device_queue_url), argv[++i]);
     else if (strcmp(argv[i], "--read-token") == 0 && i + 1 < argc) copyText(options->read_token, sizeof(options->read_token), argv[++i]);
     else if (strcmp(argv[i], "--toggle-token") == 0 && i + 1 < argc) copyText(options->toggle_token, sizeof(options->toggle_token), argv[++i]);
     else if (strcmp(argv[i], "--cache") == 0 && i + 1 < argc) copyText(options->cache, sizeof(options->cache), argv[++i]);
@@ -3393,6 +3842,89 @@ int parseOptions(int argc, char** argv, Options* options) {
 }
 
 }  // namespace
+
+// Phase 4.2: fetch pending smart-home commands (Telegram -> DB) and execute
+// them against the LAN bulbs. Called after each dashboard fetch, so the SSE
+// nudge delivers commands within seconds without any polling loop.
+static const char* ciSubstring(const char* hay, const char* needle) {
+  if (!needle[0]) return hay;
+  for (; *hay; hay++) {
+    size_t h = 0;
+    while (hay[h] && needle[h] && tolower((unsigned char)hay[h]) == tolower((unsigned char)needle[h])) h++;
+    if (!needle[h]) return hay;
+  }
+  return NULL;
+}
+
+void runDeviceCommands(const Options* options) {
+  if (!options->device_queue_url[0] || !options->read_token[0]) return;
+  if (!g_wiz_ready) {
+    g_wiz_ready = 1;
+    wizLoadCache();
+    if (g_wiz_count == 0) wizDiscover(0);
+  }
+  if (g_wiz_count == 0) return;
+
+  char list_path[128];
+  snprintf(list_path, sizeof(list_path), "/tmp/kindle-dashboard-commands.json");
+  char command[640];
+  if (commandExists("curl")) {
+    snprintf(command, sizeof(command),
+             "curl -fsSL --connect-timeout 8 --max-time 12 -H 'x-dashboard-read-token: %s' -o %s %s",
+             options->read_token, list_path, options->device_queue_url);
+    if (system(command) != 0) return;
+  } else {
+    return;
+  }
+
+  char* payload = readFile(list_path);
+  if (!payload) return;
+
+  const char* commands_value = findKeyInRange(payload, NULL, "commands");
+  if (commands_value && *commands_value == '[') {
+    const char* commands_end = matchingClose(commands_value, ']');
+    const char* cursor = commands_value + 1;
+    while (cursor < commands_end) {
+      const char* object_start = strchr(cursor, '{');
+      if (!object_start || object_start >= commands_end) break;
+      const char* object_end = matchingClose(object_start, '}');
+      if (!object_end || object_end > commands_end) break;
+
+      char id[64];
+      char target[40];
+      extractString(object_start, object_end, "id", id, sizeof(id), "");
+      extractString(object_start, object_end, "target", target, sizeof(target), "all");
+      const char* action_value = findKeyInRange(object_start, object_end, "action");
+      const char* action_end = action_value ? matchingClose(action_value, '}') : NULL;
+      int delivered = 0;
+      if (id[0] && action_value && action_end && *action_value == '{') {
+        for (int i = 0; i < g_wiz_count && !delivered; i++) {
+          WizLight* light = &g_wiz[i];
+          if (strcmp(target, "all") != 0 && light->name[0] &&
+              !ciSubstring(light->name, target) && !ciSubstring(target, light->name)) {
+            continue;
+          }
+          delivered = wizSetLight(light, action_value, action_end);
+        }
+      }
+      if (id[0]) {
+        const char* ack_body = delivered ? "{\"id\":\"%s\",\"ok\":true}" : "{\"id\":\"%s\",\"ok\":false}";
+        char body[128];
+        snprintf(body, sizeof(body), ack_body, id);
+        char ack_command[640];
+        snprintf(ack_command, sizeof(ack_command),
+                 "curl -fsSL --connect-timeout 8 --max-time 12 -X POST -H 'Content-Type: application/json' "
+                 "-H 'x-dashboard-read-token: %s' -d '%s' %s >/dev/null 2>&1 &",
+                 options->read_token, body, options->device_queue_url);
+        if (commandExists("curl")) system(ack_command);
+        fprintf(stderr, "wiz=command id=%s target=%s delivered=%d\n", id, target, delivered);
+      }
+      cursor = object_end + 1;
+    }
+  }
+  free(payload);
+  unlink(list_path);
+}
 
 int main(int argc, char** argv) {
   Options options;
@@ -3470,6 +4002,8 @@ int main(int argc, char** argv) {
     char dashboard_url[320];
     buildDashboardUrl(options.url, dashboard_url, sizeof(dashboard_url));
     const int fetched = fetchToCache(dashboard_url, options.read_token, options.cache);
+    runDeviceCommands(&options);
+    if (g_active_screen == 4) wizRefreshAll();
     if (!renderCachedPayload(&options, fetched ? "live" : "cached/offline")) {
       char lines[kMaxRows][96];
       int count = 0;

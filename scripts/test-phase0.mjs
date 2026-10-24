@@ -223,6 +223,14 @@ check("phase 4: unconfigured pregnancy renders the setup hint", () => {
   assert.ok(darkPixelCount(bytes) > 20, "pregnancy render blank");
 });
 
+check("phase 4.2: lights view renders non-blank + fixture carries lights", () => {
+  const fixturePath = join(ROOT, "kindle/native/fixtures/dashboard-data.json");
+  const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  assert.ok(Array.isArray(fixture.lights) && fixture.lights.length >= 1, "lights array in fixture");
+  const bytes = renderToPgm(fixturePath, "lights");
+  assert.ok(darkPixelCount(bytes) > 20, "lights render blank");
+});
+
 check("phase 4: legacy payload with health/challenge still renders (scoped parser tolerance)", () => {
   const fixture = JSON.parse(readFileSync(join(ROOT, "kindle/native/fixtures/dashboard-data.json"), "utf8"));
   const legacy = {

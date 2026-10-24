@@ -33,7 +33,7 @@ export type ClarifyAction = {
 // Nothing is stored - the answer goes back to the Telegram chat.
 export type QueryAction = {
   kind: "query";
-  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "chores" | "chores_all" | "nutrition";
+  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "chores" | "chores_all" | "nutrition" | "device_status";
   days?: number;
 };
 
@@ -66,7 +66,20 @@ type ChoreAction = {
   end_min?: number;
 };
 
-type TelegramAction = PlannerAction | PregnancyTaskAction | PregnancyTodoAction | ChoreAction | CalendarEventAction | ClarifyAction | QueryAction;
+// Phase 4.2: smart-home device commands (first: WiZ lights). The applier
+// writes a device_commands row; the Kindle on the home LAN executes the UDP
+// call against the bulb. Reply is an ack of intent, not bulb confirmation.
+type DeviceAction = {
+  kind: "device";
+  action: "set";
+  target: string;
+  state?: boolean;
+  brightness?: number;
+  temp?: number;
+  color?: string;
+};
+
+type TelegramAction = PlannerAction | PregnancyTaskAction | PregnancyTodoAction | ChoreAction | DeviceAction | CalendarEventAction | ClarifyAction | QueryAction;
 
 type TelegramUpdate = {
   message?: {
@@ -142,7 +155,8 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
-  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|chores|chores_all|nutrition\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"chores\" lists today's scheduled chores with their times; set \"days\":1 for chores tomorrow (any day offset 0-6, e.g. \"what chores are there tomorrow\"); \"chores_all\" lists every chore with its full recurring schedule (\"list all the chores\"); \"nutrition\" gives this week's pregnancy nutrition + supplements.",
+  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|chores|chores_all|nutrition|device_status\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"chores\" lists today's scheduled chores with their times; set \"days\":1 for chores tomorrow (any day offset 0-6, e.g. \"what chores are there tomorrow\"); \"chores_all\" lists every chore with its full recurring schedule (\"list all the chores\"); \"nutrition\" gives this week's pregnancy nutrition + supplements; \"device_status\" answers questions about the CURRENT light state (the bulb is read from the Kindle screen, not the bot).",
+  "For SMART-HOME LIGHTS (WiZ bulbs; a physical action) return {\"kind\":\"device\",\"action\":\"set\",\"target\":\"<bulb name substring or 'all'>\",\"state\":true|false,\"brightness\":<1-100>,\"temp\":<2200-6500 Kelvin>,\"color\":\"white|red|green|blue\"} - include ONLY the fields the message implies: \"lights off\" -> {\"state\":false}; \"dim lights to 50\" -> {\"brightness\":50,\"state\":true}; \"lights warm\" -> {\"temp\":2700,\"state\":true}; \"lights blue\" -> {\"color\":\"blue\",\"state\":true}; \"night light\" -> {\"brightness\":6,\"temp\":2200,\"state\":true}; \"bedroom light off\" -> {\"target\":\"bedroom\",\"state\":false}. NEVER guess a toggle when unsure what the message wants - clarify instead; wrong light switches are worse than a question.",
   "For SCHEDULED CHORES (time-bound tasks with reminders, shown on the dashboard CHORES panel) return {\"kind\":\"chore\",...}. {\"kind\":\"chore\",\"action\":\"add\",\"text\":\"<chore text>\",\"pattern\":\"daily|weekly|once\",\"days\":\"<csv mo,tu,we,th,fr,sa,su when weekly>\",\"once_date\":\"<YYYY-MM-DD when once>\",\"start_min\":<minutes from midnight>,\"end_min\":<minutes from midnight>} when the message adds a chore with a recurrence or time (e.g. \"add chore clean kitchen every saturday\", \"soak the cashew everyday at 10pm\", \"take out trash on tuesday thursday and saturday\"). {\"kind\":\"chore\",\"action\":\"done\",\"text\":\"<chore words>\"} marks one of today's chores done; \"skip\" mutes it for today; \"delete\" removes the chore entirely. Chore messages usually contain the word chore, or words like everyday/every <weekday>/tomorrow/at <time>. These chores are DIFFERENT from the plain todo list (no time, lives indefinitely). Chore time rules: a single point time (\"at 10pm\") is start_min=1320 with end_min=1440 (chores nag until midnight); a window (\"from 10am to 10pm\") sets both; when the message names NO time, OMIT start_min and end_min entirely (server defaults 10:00-22:00). NEVER invent a duration (no start+60) or an all-day 00:00-23:59 window yourself.",
   "For personal pregnancy todos return {\"kind\":\"pregnancy_todo\",\"action\":\"add\",\"text\":\"<todo text>\"} when the message asks to ADD something to the pregnancy todos/dashboard list (e.g. \"add buy vitamins to pregnancy todo\"), and {\"kind\":\"pregnancy_todo\",\"action\":\"done\",\"text\":\"<todo words>\"} when it marks one of those personal todos as done. These are separate from the pregnancy care checklist tasks.",
   "For pregnancy care tasks return: {\"kind\":\"pregnancy_task\",\"action\":\"complete_task\",\"task\":\"<task words>\"} when the message marks a pregnancy care task as done (kraamzorg booking, kinkhoest vaccination, GBS swab, scans, hospital registration, baby shopping, hospital bag). Fuzzy-match the task words against the connected task list in the system context.",
@@ -251,6 +265,7 @@ async function applyTelegramAction(admin: any, action: TelegramAction): Promise<
   if (action.kind === "pregnancy_task") return applyPregnancyTaskAction(admin, action);
   if (action.kind === "pregnancy_todo") return applyPregnancyTodoAction(admin, action);
   if (action.kind === "chore") return applyChoreAction(admin, action);
+  if (isDeviceAction(action)) return applyDeviceAction(admin, action);
   if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
   return applyPlannerAction(admin, action);
 }
@@ -279,6 +294,9 @@ async function applyQueryAction(admin: any, action: QueryAction): Promise<string
   }
   if (action.query === "chores_all") {
     return listAllChoresReply(await loadAllChores(admin));
+  }
+  if (action.query === "device_status") {
+    return "💡 Live light state is on the Kindle LIGHTS screen — the bot can't see the bulb directly.";
   }
   if (action.query === "nutrition") return nutritionReply(dashboardLocalDate());
   return queryListItems(admin, action.query);
@@ -955,6 +973,9 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
   const queryAction = parseQueryMessage(normalized);
   if (queryAction) return queryAction;
 
+  const deviceAction = parseDeviceAction(normalized);
+  if (deviceAction) return deviceAction;
+
   const hasPlannerVerb = /\b(add|put|include|buy|get|need|mark|check off|complete|completed|done|undo|uncheck|delete|remove|drop|clear|empty|reset)\b/.test(lower);
   // Question-shaped messages are lookups, not planner adds — let the LLM route them.
   const questionShaped = /^(what|any|show|is|are|do|does|list|read|grab|give|send|see|check)\b/.test(lower);
@@ -1016,6 +1037,10 @@ export function parseQueryMessage(message: string): QueryAction | null {
   }
   if (/\bnutrition\b|\bvitamins?\b|\bsupplements?\b|\bwhat (should|do) (i|we|she) eat\b|\bfood this week\b/.test(lower)) {
     return { kind: "query", query: "nutrition" };
+  }
+  // Live bulb state lives on the Kindle (LAN UDP) — the bot points there.
+  if (/\b(are|is)\s+(the\s+)?lights?\s+(on|off)\b|\blight(s)? status\b/.test(lower)) {
+    return { kind: "query", query: "device_status" };
   }
   return null;
 }
@@ -1708,6 +1733,148 @@ function validateChoreAction(input: unknown): ChoreAction | null {
   return action;
 }
 
+// ---- Phase 4.2: smart-home lights (WiZ, executed by the Kindle over LAN UDP) ----
+
+const LIGHT_COLORS: Record<string, { r: number; g: number; b: number; label: string }> = {
+  white: { r: 255, g: 255, b: 255, label: "white" },
+  red: { r: 255, g: 30, b: 30, label: "red" },
+  green: { r: 40, g: 220, b: 80, label: "green" },
+  blue: { r: 60, g: 110, b: 255, label: "blue" }
+};
+
+function isDeviceAction(action: TelegramAction): action is DeviceAction {
+  return action.kind === "device";
+}
+
+// Deterministic fallback: "lights on/off", "dim lights to 50", "lights warm",
+// "lights blue", "night light", "bedroom light off". The LLM handles the rest.
+export function parseDeviceAction(message: string): DeviceAction | null {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  if (!/\blights?\b/.test(lower) && !/\bnight light\b/.test(lower)) return null;
+  if (hasExplicitList(lower)) return null;
+  // Status questions have no live answer in the bot (the bulb state lives on
+  // the Kindle screen).
+  if (/\b(are|is)\s+(the\s+)?lights?\b|\blight status\b/.test(lower)) return null;
+
+  // Target: leading room words before "light(s)" (e.g. "bedroom light off").
+  let target = "all";
+  const targetMatch = lower.match(/^([a-z]+)\s+lights?\b/);
+  if (targetMatch && !/^(?:the|my|a|all|turn|please|dim|set|switch|flip)$/.test(targetMatch[1])) {
+    target = targetMatch[1];
+  }
+
+  const action: DeviceAction = { kind: "device", action: "set", target };
+
+  const onOff = lower.match(/\b(?:lights?|lamp)\s+(on|off)\b/) || lower.match(/\b(?:turn|switch)\s+(?:the\s+|on\s+|off\s+)*(?:lights?|lamp)\s+(on|off)\b/);
+  if (onOff) {
+    action.state = onOff[1] === "on";
+    return action;
+  }
+  if (/\bturn\s+on\b|\bswitch\s+on\b/.test(lower)) { action.state = true; return action; }
+  if (/\bturn\s+off\b|\bswitch\s+off\b|\blights?\s+out\b/.test(lower)) { action.state = false; return action; }
+
+  const dim = lower.match(/\b(?:dim|set|brightness)\s+(?:the\s+|my\s+)?(?:lights?|lamp)?\s*(?:to|at)?\s*(\d{1,3})\s*%?\b/);
+  if (dim) {
+    const value = Number(dim[1]);
+    if (value >= 1 && value <= 100) {
+      action.brightness = value;
+      action.state = true;
+      return action;
+    }
+  }
+
+  if (/\bnight\s*(?:light|mode)\b/.test(lower)) {
+    action.brightness = 6;
+    action.temp = 2200;
+    action.state = true;
+    return action;
+  }
+
+  const white = lower.match(/\b(warm|cool)\s*(?:white)?\b/);
+  if (white) {
+    action.temp = white[1] === "warm" ? 2700 : 5700;
+    action.state = true;
+    return action;
+  }
+
+  for (const [name, rgb] of Object.entries(LIGHT_COLORS)) {
+    if (new RegExp(`\\b${name}\\b`).test(lower)) {
+      action.color = name;
+      action.state = true;
+      return action;
+    }
+  }
+
+  return null;
+}
+
+function describeDeviceParams(action: DeviceAction): string {
+  const parts: string[] = [];
+  if (action.state === true) parts.push("on");
+  if (action.state === false) parts.push("off");
+  if (action.brightness !== undefined) parts.push(`${action.brightness}%`);
+  if (action.temp !== undefined) parts.push(action.temp <= 3500 ? "warm white" : "cool white");
+  if (action.color) parts.push(action.color);
+  return parts.join(" ") || "update";
+}
+
+async function applyDeviceAction(admin: any, action: DeviceAction): Promise<string> {
+  const params: Record<string, unknown> = {};
+  if (action.state !== undefined) params.state = action.state;
+  if (action.brightness !== undefined) params.brightness = action.brightness;
+  if (action.temp !== undefined) params.temp = action.temp;
+  if (action.color) {
+    const rgb = LIGHT_COLORS[action.color];
+    if (rgb) {
+      params.r = rgb.r;
+      params.g = rgb.g;
+      params.b = rgb.b;
+    }
+  }
+  if (Object.keys(params).length === 0) {
+    return "What should the light do? e.g. \"lights off\", \"dim lights to 50\", \"lights warm\".";
+  }
+  const { error } = await admin.database.from("device_commands").insert([{
+    id: crypto.randomUUID(),
+    target: (action.target || "all").slice(0, 32),
+    action: params,
+    source: "telegram"
+  }]);
+  if (error) throw error;
+  const targetLabel = action.target === "all" ? "lights" : `${action.target} light`;
+  return `💡 ${targetLabel} → ${describeDeviceParams(action)}`;
+}
+
+function validateDeviceAction(input: unknown): DeviceAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<DeviceAction>;
+  if (candidate.kind !== "device") return null;
+  if (candidate.action !== "set") return null;
+  const target = typeof candidate.target === "string" && candidate.target.trim()
+    ? candidate.target.trim().toLowerCase().slice(0, 32)
+    : "all";
+  const action: DeviceAction = { kind: "device", action: "set", target };
+  if (typeof candidate.state === "boolean") action.state = candidate.state;
+  if (typeof candidate.brightness === "number" && Number.isFinite(candidate.brightness)) {
+    const value = Math.round(candidate.brightness);
+    if (value < 1 || value > 100) return null;
+    action.brightness = value;
+  }
+  if (typeof candidate.temp === "number" && Number.isFinite(candidate.temp)) {
+    const value = Math.round(candidate.temp);
+    if (value < 2200 || value > 6500) return null;
+    action.temp = value;
+  }
+  if (typeof candidate.color === "string" && LIGHT_COLORS[candidate.color.toLowerCase()]) {
+    action.color = candidate.color.toLowerCase();
+  }
+  if (action.state === undefined && action.brightness === undefined && action.temp === undefined && !action.color) {
+    return null;
+  }
+  return action;
+}
+
 function validateQueryAction(input: unknown): QueryAction | null {
   if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<QueryAction>;
@@ -1717,7 +1884,7 @@ function validateQueryAction(input: unknown): QueryAction | null {
     if (!Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) return null;
     return { kind: "query", query: "events_range", days };
   }
-  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition" || candidate.query === "chores_all") {
+  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition" || candidate.query === "chores_all" || candidate.query === "device_status") {
     return { kind: "query", query: candidate.query };
   }
   if (candidate.query === "chores") {
@@ -1732,7 +1899,7 @@ function validateQueryAction(input: unknown): QueryAction | null {
 }
 
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateQueryAction(input) ?? validatePregnancyTodoAction(input) ?? validateChoreAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+  return validateQueryAction(input) ?? validatePregnancyTodoAction(input) ?? validateChoreAction(input) ?? validateDeviceAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
 export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {

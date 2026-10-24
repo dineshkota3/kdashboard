@@ -40,10 +40,24 @@ export default async function(req: Request): Promise<Response> {
     if (error) throw error;
 
     const removed = Array.isArray(deleted) ? deleted.length : 0;
-    console.log(`planner-cleanup removed=${removed} after_hours=${afterHours}`);
+
+    // Phase 4.2: executed device commands are one-shot — prune everything
+    // older than 24h regardless of status (pending rows older than a day are
+    // stale: the bulb was unreachable when they were queued).
+    const commandCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: deletedCommands, error: commandsError } = await admin.database
+      .from("device_commands")
+      .delete()
+      .lt("created_at", commandCutoff)
+      .select("id");
+    if (commandsError) throw commandsError;
+    const removedCommands = Array.isArray(deletedCommands) ? deletedCommands.length : 0;
+
+    console.log(`planner-cleanup removed=${removed} commands=${removedCommands} after_hours=${afterHours}`);
     return jsonResponse({
       ok: true,
       removed,
+      removed_commands: removedCommands,
       after_hours: afterHours,
       checked_at: new Date().toISOString()
     });
