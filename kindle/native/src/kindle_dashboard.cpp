@@ -2113,10 +2113,37 @@ void drawTopHeader(Canvas* canvas, const Dashboard* dashboard, const char* statu
 void drawSubHeader(Canvas* canvas, int shell_x, int y, int shell_w, const char* title) {
   const int list_header_h = 80;
   doubleRect(canvas, shell_x + 10, y, shell_w - 20, list_header_h, 0);
-  const int title_w = shell_w - 310;
+  const int title_w = shell_w - 470;
   const int title_scale = textWidth(title, 5) <= title_w ? 5 : (textWidth(title, 4) <= title_w ? 4 : 3);
   const int title_y = y + (title_scale == 5 ? 22 : (title_scale == 4 ? 26 : 30));
   drawTextClipped(canvas, shell_x + 28, title_y, title_w, title, title_scale, 0);
+
+  // Phase 4.4 nav: named PREV/NEXT buttons cycle the screens (same order as
+  // swipes: home -> pregnancy -> timeline -> lights -> music -> home). List
+  // and calendar overlays keep the plain HOME/BACK pair.
+  if (g_active_screen >= 1 && g_active_screen != 3) {
+    const int nav_cycle[5] = {0, 1, 2, 4, 5};
+    const char* nav_names[5] = {"HOME", "PREG", "TIME", "LIGHTS", "MUSIC"};
+    int idx = 0;
+    for (int i = 0; i < 5; i++) {
+      if (nav_cycle[i] == g_active_screen) idx = i;
+    }
+    const int prev_idx = (idx + 4) % 5;
+    const int next_idx = (idx + 1) % 5;
+
+    Rect next_rect = {shell_x + shell_w - 156, y + 14, 146, 52};
+    Rect prev_rect = {next_rect.x - 156, y + 14, 146, 52};
+
+    // left button = previous screen, right button = next screen
+    strokeRect(canvas, prev_rect.x, prev_rect.y, prev_rect.w, prev_rect.h, 2, 0);
+    drawTextCentered(canvas, prev_rect.x + prev_rect.w / 2, prev_rect.y + 16, prev_rect.w - 12, nav_names[prev_idx], 2, 0);
+    addTouchRegion(prev_rect, kTouchScreenPrev, -1, -1, "", 0);
+
+    strokeRect(canvas, next_rect.x, next_rect.y, next_rect.w, next_rect.h, 2, 0);
+    drawTextCentered(canvas, next_rect.x + next_rect.w / 2, next_rect.y + 16, next_rect.w - 12, nav_names[next_idx], 2, 0);
+    addTouchRegion(next_rect, kTouchScreenNext, -1, -1, "", 0);
+    return;
+  }
 
   Rect back_rect = {shell_x + shell_w - 136, y + 14, 104, 52};
   Rect home_rect = {back_rect.x - 116, y + 14, 104, 52};
