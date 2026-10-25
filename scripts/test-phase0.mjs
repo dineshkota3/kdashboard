@@ -223,6 +223,14 @@ check("phase 4: unconfigured pregnancy renders the setup hint", () => {
   assert.ok(darkPixelCount(bytes) > 20, "pregnancy render blank");
 });
 
+check("phase 4.4: music view renders non-blank + fixture carries spotify", () => {
+  const fixturePath = join(ROOT, "kindle/native/fixtures/dashboard-data.json");
+  const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));
+  assert.ok(fixture.spotify && fixture.spotify.track, "spotify block in fixture");
+  const bytes = renderToPgm(fixturePath, "music");
+  assert.ok(darkPixelCount(bytes) > 20, "music render blank");
+});
+
 check("phase 4.2: lights view renders non-blank + fixture carries lights", () => {
   const fixturePath = join(ROOT, "kindle/native/fixtures/dashboard-data.json");
   const fixture = JSON.parse(readFileSync(fixturePath, "utf8"));

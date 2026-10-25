@@ -9,6 +9,8 @@ DASHBOARD_TOGGLE_URL="${DASHBOARD_TOGGLE_URL:-}"
 DASHBOARD_READ_TOKEN="${DASHBOARD_READ_TOKEN:-}"
 DASHBOARD_TOGGLE_TOKEN="${DASHBOARD_TOGGLE_TOKEN:-}"
 DEVICE_QUEUE_URL="${DEVICE_QUEUE_URL:-}"
+SPOTIFY_BRIDGE_URL="${SPOTIFY_BRIDGE_URL:-}"
+SMARTTHINGS_BRIDGE_URL="${SMARTTHINGS_BRIDGE_URL:-}"
 CACHE="${CACHE:-/mnt/us/documents/kindle-dashboard-data.json}"
 LOG="${LOG:-/mnt/us/documents/kindle-dashboard-native.log}"
 PIDFILE="${PIDFILE:-/mnt/us/documents/kindle-dashboard-native.pid}"
@@ -111,6 +113,8 @@ start_dashboard() {
     --events-url "$DASHBOARD_EVENTS_URL" \
     --toggle-url "$DASHBOARD_TOGGLE_URL" \
     --device-queue-url "$DEVICE_QUEUE_URL" \
+    --spotify-url "$SPOTIFY_BRIDGE_URL" \
+    --smartthings-url "$SMARTTHINGS_BRIDGE_URL" \
     --read-token "$DASHBOARD_READ_TOKEN" \
     --toggle-token "$DASHBOARD_TOGGLE_TOKEN" \
     --cache "$CACHE" \

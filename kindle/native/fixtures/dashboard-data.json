@@ -337,17 +337,68 @@
     "meal_d": "ROAST CHICKEN + VEG"
   },
   "chores": [
-    { "id": "chore-1", "text": "CLEAN KITCHEN", "time_display": "9:00-22:00", "done": false, "overdue": false },
-    { "id": "chore-2", "text": "SOAK THE CASHEW", "time_display": "22:00", "done": false, "overdue": true },
-    { "id": "chore-3", "text": "TAKE OUT TRASH", "time_display": "10:00-22:00", "done": true, "overdue": false },
-    { "id": "chore-4", "text": "WATER PLANTS", "time_display": "17:00", "done": false, "overdue": false }
+    {
+      "id": "chore-1",
+      "text": "CLEAN KITCHEN",
+      "time_display": "9:00-22:00",
+      "done": false,
+      "overdue": false
+    },
+    {
+      "id": "chore-2",
+      "text": "SOAK THE CASHEW",
+      "time_display": "22:00",
+      "done": false,
+      "overdue": true
+    },
+    {
+      "id": "chore-3",
+      "text": "TAKE OUT TRASH",
+      "time_display": "10:00-22:00",
+      "done": true,
+      "overdue": false
+    },
+    {
+      "id": "chore-4",
+      "text": "WATER PLANTS",
+      "time_display": "17:00",
+      "done": false,
+      "overdue": false
+    }
   ],
   "pregnancy_todos": [
-    { "id": "todo-1", "text": "BUY PRENATAL VITAMINS", "done": false },
-    { "id": "todo-2", "text": "BOOK KRAAMZORG TOUR", "done": false },
-    { "id": "todo-3", "text": "PICK UP FOLIUMZUUR REFILL", "done": true }
+    {
+      "id": "todo-1",
+      "text": "BUY PRENATAL VITAMINS",
+      "done": false
+    },
+    {
+      "id": "todo-2",
+      "text": "BOOK KRAAMZORG TOUR",
+      "done": false
+    },
+    {
+      "id": "todo-3",
+      "text": "PICK UP FOLIUMZUUR REFILL",
+      "done": true
+    }
   ],
   "lights": [
-    { "ip": "192.168.68.50", "name": "Living Room", "state": true, "brightness": 80, "temp": 2700, "online": true }
-  ]
+    {
+      "ip": "192.168.68.50",
+      "name": "Living Room",
+      "state": true,
+      "brightness": 80,
+      "temp": 2700,
+      "online": true
+    }
+  ],
+  "spotify": {
+    "track": "Bohemian Rhapsody",
+    "artist": "Queen",
+    "is_playing": true,
+    "progress_ms": 150000,
+    "duration_ms": 354000,
+    "device": "Samsung Soundbar Q700C"
+  }
 }

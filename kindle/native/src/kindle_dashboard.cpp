@@ -72,7 +72,13 @@ enum TouchAction {
   kTouchLightToggle = 23,
   kTouchLightBrightness = 24,
   kTouchLightWhite = 25,
-  kTouchLightColor = 26
+  kTouchLightColor = 26,
+  kTouchMusicToggle = 27,
+  kTouchMusicNext = 28,
+  kTouchMusicPrev = 29,
+  kTouchMusicVolDown = 30,
+  kTouchMusicVolUp = 31,
+  kTouchMusicPlaylist = 32
 };
 
 struct Item {
@@ -156,6 +162,24 @@ struct Chore {
 
 const int kMaxLights = 4;
 
+// Phase 4.4: Spotify now-playing (server reads Spotify; the Kindle just shows
+// it and sends play/pause/next to the bridge).
+struct MusicPlaylist {
+  char name[40];
+  char uri[80];
+};
+
+struct MusicState {
+  char track[96];
+  char artist[96];
+  int is_playing;
+  int progress_ms;
+  int duration_ms;
+  char device[40];
+  MusicPlaylist playlists[5];
+  int playlist_count;
+};
+
 // Phase 4.2: WiZ bulb (LAN UDP 38899). Fixture payloads carry the status
 // fields; in live mode discovery + getPilot fill them on-device.
 struct WizLight {
@@ -206,6 +230,8 @@ struct Dashboard {
   int chore_count;
   WizLight lights[kMaxLights];
   int light_count;
+  MusicState music;
+  int music_count; // 1 when the payload carried a spotify block
   NutritionStrip nutrition;
 };
 
@@ -214,12 +240,18 @@ struct Dashboard {
 WizLight g_wiz[kMaxLights];
 int g_wiz_count = 0;
 int g_wiz_ready = 0;            // discovery/load attempted once
+// Phase 4.4: live Spotify now-playing (server reads Spotify; Kindle shows it).
+MusicState g_music;
+int g_music_ready = 0;          // live now-playing fetched once
+int g_music_volume_pct = 12;    // last-known soundbar volume (bridge caps at 30)
 
 struct Options {
   char url[256];
   char events_url[256];
   char toggle_url[256];
   char device_queue_url[256];
+  char spotify_url[256];
+  char smartthings_url[256];
   char read_token[160];
   char toggle_token[160];
   char cache[256];
@@ -1023,6 +1055,36 @@ void wizRefreshAll() {
   if (offline) wizDiscover(1);
 }
 
+void parseMusic(const char* music_value, const char* music_end, Dashboard* dashboard) {
+  MusicState* m = &dashboard->music;
+  memset(m, 0, sizeof(*m));
+  extractString(music_value, music_end, "track", m->track, sizeof(m->track), "");
+  extractString(music_value, music_end, "artist", m->artist, sizeof(m->artist), "");
+  m->is_playing = extractBool(music_value, music_end, "is_playing", 0);
+  m->progress_ms = extractInt(music_value, music_end, "progress_ms", 0);
+  m->duration_ms = extractInt(music_value, music_end, "duration_ms", 0);
+  extractString(music_value, music_end, "device", m->device, sizeof(m->device), "");
+
+  const char* pls_value = findKeyInRange(music_value, music_end, "playlists");
+  m->playlist_count = 0;
+  if (pls_value && *pls_value == '[') {
+    const char* pls_end = matchingClose(pls_value, ']');
+    const char* cursor = pls_value + 1;
+    while (cursor < pls_end && m->playlist_count < 5) {
+      const char* obj = strchr(cursor, '{');
+      if (!obj || obj >= pls_end) break;
+      const char* obj_end = matchingClose(obj, '}');
+      if (!obj_end || obj_end > pls_end) break;
+      MusicPlaylist* pl = &m->playlists[m->playlist_count];
+      extractString(obj, obj_end, "name", pl->name, sizeof(pl->name), "");
+      extractString(obj, obj_end, "uri", pl->uri, sizeof(pl->uri), "");
+      if (pl->name[0] && pl->uri[0]) m->playlist_count++;
+      cursor = obj_end + 1;
+    }
+  }
+  if (m->track[0]) dashboard->music_count = 1;
+}
+
 void parseLights(const char* lights_value, const char* lights_end, Dashboard* dashboard) {
   const char* cursor = lights_value + 1;
   while (cursor < lights_end && dashboard->light_count < kMaxLights) {
@@ -1092,6 +1154,14 @@ int parseDashboard(const char* json, Dashboard* dashboard) {
     const char* lights_end = matchingClose(lights_value, ']');
     if (lights_end) {
       parseLights(lights_value, lights_end, dashboard);
+    }
+  }
+
+  const char* music_value = findKeyInRange(json, NULL, "spotify");
+  if (music_value && *music_value == '{') {
+    const char* music_end = matchingClose(music_value, '}');
+    if (music_end) {
+      parseMusic(music_value, music_end, dashboard);
     }
   }
 
@@ -2565,6 +2635,164 @@ void drawLightsDashboard(Canvas* canvas, const Dashboard* dashboard, const char*
   }
 }
 
+// Phase 4.4: NOW PLAYING — renders fixture payload (dashboard->music) or the
+// live bridge state (g_music) on the device.
+static const MusicState* musicForView(const Dashboard* dashboard) {
+  if (dashboard->music_count > 0) return &dashboard->music;
+  return &g_music;
+}
+
+void musicNowRefresh(const Options* options) {
+  if (!options->spotify_url[0] || !options->read_token[0]) return;
+  char list_path[128];
+  snprintf(list_path, sizeof(list_path), "/tmp/kindle-dashboard-nowplaying.json");
+  char command[640];
+  snprintf(command, sizeof(command),
+           "curl -fsSL --connect-timeout 8 --max-time 12 -H 'x-dashboard-read-token: %s' -o %s %s",
+           options->read_token, list_path, options->spotify_url);
+  if (system(command) != 0) return;
+  char* payload = readFile(list_path);
+  if (!payload) return;
+  Dashboard tmp;
+  memset(&tmp, 0, sizeof(tmp));
+  const char* music_value = findKeyInRange(payload, NULL, "now_playing");
+  if (music_value && *music_value == '{') {
+    const char* music_end = matchingClose(music_value, '}');
+    if (music_end) parseMusic(music_value, music_end, &tmp);
+  }
+  if (tmp.music_count > 0) {
+    g_music = tmp.music;
+    g_music_ready = 1;
+    fprintf(stderr, "music=refresh track=%.40s playing=%d\n", g_music.track, g_music.is_playing);
+  }
+  free(payload);
+  unlink(list_path);
+}
+
+// Fire a music command at the bridge (fire-and-forget POST, backgrounded).
+void musicCommandBody(const Options* options, const char* body, const char* target) {
+  const char* url = strcmp(target, "smartthings") == 0 ? options->smartthings_url : options->spotify_url;
+  if (!url || !url[0] || !options->read_token[0]) return;
+  char command[768];
+  snprintf(command, sizeof(command),
+           "curl -fsSL --connect-timeout 8 --max-time 12 -X POST -H 'Content-Type: application/json' "
+           "-H 'x-dashboard-read-token: %s' -d '%s' %s >/dev/null 2>&1 &",
+           options->read_token, body, url);
+  system(command);
+  fprintf(stderr, "music=cmd body=%.60s\n", body);
+}
+
+void musicCommand(const Options* options, const char* action, int volume, const char* volume_target) {
+  char body[128];
+  if (volume >= 0) {
+    snprintf(body, sizeof(body), "{\"action\":\"%s\",\"value\":%d}", action, volume);
+  } else {
+    snprintf(body, sizeof(body), "{\"action\":\"%s\"}", action);
+  }
+  const char* url = strcmp(volume_target, "smartthings") == 0 ? options->smartthings_url : options->spotify_url;
+  if (!url || !url[0] || !options->read_token[0]) return;
+  char command[640];
+  snprintf(command, sizeof(command),
+           "curl -fsSL --connect-timeout 8 --max-time 12 -X POST -H 'Content-Type: application/json' "
+           "-H 'x-dashboard-read-token: %s' -d '%s' %s >/dev/null 2>&1 &",
+           options->read_token, body, url);
+  system(command);
+  fprintf(stderr, "music=cmd action=%s\n", action);
+}
+
+void drawMusicDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
+  clearCanvas(canvas, 255);
+  clearTouchRegions();
+  g_last_screen_width = canvas->width;
+  g_last_screen_height = canvas->height;
+  const int shell_w = canvas->width;
+  const int shell_x = 0;
+  const int shell_y = kKindleStatusBarHeight;
+  const int shell_h = canvas->height - shell_y;
+  strokeRect(canvas, shell_x, shell_y, shell_w, shell_h, 3, 0);
+  drawTopHeader(canvas, dashboard, status, shell_x, shell_y, shell_w);
+
+  const int sub_y = shell_y + 10 + 132 + 8;
+  drawSubHeader(canvas, shell_x, sub_y, shell_w, "NOW PLAYING");
+
+  const MusicState* m = musicForView(dashboard);
+  fprintf(stderr, "render=music track=%.40s playing=%d\n", m->track, m->is_playing);
+
+  const int card_x = shell_x + 18;
+  const int card_w = shell_w - 36;
+  const int card_y = sub_y + 112;
+  const int card_h = 560;
+  strokeRect(canvas, card_x, card_y, card_w, card_h, 3, 0);
+
+  char track_upper[96];
+  upperCopy(track_upper, sizeof(track_upper), m->track);
+  drawTextClipped(canvas, card_x + 20, card_y + 24, card_w - 40, track_upper, 4, 0);
+
+  char artist_line[120];
+  char artist_upper[96];
+  upperCopy(artist_upper, sizeof(artist_upper), m->artist);
+  snprintf(artist_line, sizeof(artist_line), "%s  -  %s", artist_upper, m->device);
+  drawTextClipped(canvas, card_x + 20, card_y + 96, card_w - 40, artist_line, 3, 0);
+
+  // progress bar
+  if (m->duration_ms > 0) {
+    const int bar_y = card_y + 150;
+    strokeRect(canvas, card_x + 20, bar_y, card_w - 40, 14, 1, 0);
+    const int fill = (int)(((long long)m->progress_ms * (card_w - 44)) / m->duration_ms);
+    if (fill > 0) fillRect(canvas, card_x + 22, bar_y + 2, fill, 10, 0);
+    char time_line[48];
+    const int secs = m->progress_ms / 1000;
+    const int total = m->duration_ms / 1000;
+    snprintf(time_line, sizeof(time_line), "%d:%02d / %d:%02d", secs / 60, secs % 60, total / 60, total % 60);
+    drawTextClipped(canvas, card_x + 20, bar_y + 26, 200, time_line, 2, 0);
+  }
+
+  // transport buttons
+  const int row_y = card_y + 210;
+  const int btn_w = (card_w - 40 - 3 * 10) / 4;
+  const char* labels[4] = {m->is_playing ? "PAUSE" : "PLAY", "PREV", "NEXT", "VOL+"};
+  const TouchAction actions[4] = {kTouchMusicToggle, kTouchMusicPrev, kTouchMusicNext, kTouchMusicVolUp};
+  for (int i = 0; i < 4; i++) {
+    const int bx = card_x + 20 + i * (btn_w + 10);
+    strokeRect(canvas, bx, row_y, btn_w, 54, 2, 0);
+    drawTextCentered(canvas, bx + btn_w / 2, row_y + 18, btn_w - 10, labels[i], 2, 0);
+    addTouchRegion(Rect{bx, row_y, btn_w, 54}, actions[i], -1, -1, "", 0);
+  }
+  const int row2_y = row_y + 66;
+  const int vol_labels_n = 2;
+  const char* vol_labels[2] = {"VOL-", "SOUNDBAR OFF"};
+  const TouchAction vol_actions[2] = {kTouchMusicVolDown, kTouchMusicVolUp};
+  (void)vol_labels_n;
+  const int vol_w = (card_w - 40 - 10) / 2;
+  for (int i = 0; i < 2; i++) {
+    const int bx = card_x + 20 + i * (vol_w + 10);
+    strokeRect(canvas, bx, row2_y, vol_w, 54, 2, 0);
+    drawTextCentered(canvas, bx + vol_w / 2, row2_y + 18, vol_w - 10, i == 0 ? "VOL-" : "SOUNDBAR OFF", 2, 0);
+    addTouchRegion(Rect{bx, row2_y, vol_w, 54}, i == 0 ? kTouchMusicVolDown : kTouchMusicVolUp, -1, -1, "", 0);
+  }
+
+  // Saved playlists (tap = play on the soundbar)
+  int pl_y = row2_y + 66;
+  drawTextClipped(canvas, card_x + 20, pl_y, 200, "PLAYLISTS", 2, 0);
+  pl_y += 26;
+  for (int pi = 0; pi < m->playlist_count && pl_y + 44 < card_y + card_h - 20; pi++) {
+    char pl_name_upper[40];
+    upperCopy(pl_name_upper, sizeof(pl_name_upper), m->playlists[pi].name);
+    strokeRect(canvas, card_x + 20, pl_y, card_w - 40, 44, 2, 0);
+    drawTextClipped(canvas, card_x + 32, pl_y + 13, card_w - 64, pl_name_upper, 3, 0);
+    addTouchRegion(Rect{card_x + 20, pl_y, card_w - 40, 44}, kTouchMusicPlaylist, -1, pi, "", 0);
+    pl_y += 50;
+  }
+  if (m->playlist_count == 0) {
+    drawTextClipped(canvas, card_x + 20, pl_y, 300, "NO SAVED PLAYLISTS", 2, 0);
+  }
+  (void)vol_actions;
+
+  char note[96];
+  snprintf(note, sizeof(note), "CONTROL VIA TELEGRAM // %s", m->is_playing ? "STREAMING" : "IDLE");
+  drawTextCentered(canvas, shell_x + shell_w / 2, card_y + card_h - 40, shell_w - 44, note, 2, 0);
+}
+
 void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {
   if (g_active_calendar) {
     drawFullCalendarDashboard(canvas, dashboard, status);
@@ -2579,6 +2807,7 @@ void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char
     case 2: drawCareTimelineDashboard(canvas, dashboard, status); return;
     case 3: drawChoresDashboard(canvas, dashboard, status); return;
     case 4: drawLightsDashboard(canvas, dashboard, status); return;
+    case 5: drawMusicDashboard(canvas, dashboard, status); return;
     default: drawBitmapDashboard(canvas, dashboard, status);
   }
 }
@@ -3527,9 +3756,17 @@ int handlePendingTouch(const Options* options) {
     if (g_active_calendar || g_active_list >= 0) {
       return 0;
     }
-    const int next = action == kTouchScreenNext ? g_active_screen + 1 : g_active_screen - 1;
-    if (next < 0 || next > 2 || next == g_active_screen) return 0;
+    // Cycle: home -> pregnancy -> timeline -> lights(4) -> music(5) -> home
+    const int cycle[5] = {0, 1, 2, 4, 5};
+    int idx = 0;
+    for (int i = 0; i < 5; i++) {
+      if (cycle[i] == g_active_screen) idx = i;
+    }
+    const int next_idx = action == kTouchScreenNext ? (idx + 1) % 5 : (idx + 4) % 5;
+    const int next = cycle[next_idx];
+    if (next == g_active_screen) return 0;
     g_active_screen = next;
+    if (next == 5) musicNowRefresh(options);
     return 1;
   }
 
@@ -3557,6 +3794,39 @@ int handlePendingTouch(const Options* options) {
     g_active_list = -1;
     g_active_screen = 4;
     wizRefreshAll();
+    return 1;
+  }
+
+  if (action == kTouchMusicToggle || action == kTouchMusicNext || action == kTouchMusicPrev) {
+    const char* cmd = action == kTouchMusicToggle ? (g_music.is_playing ? "pause" : "play")
+                                                 : (action == kTouchMusicNext ? "next" : "prev");
+    musicCommand(options, cmd, -1, "");
+    musicNowRefresh(options);
+    return 1;
+  }
+
+  if (action == kTouchMusicPlaylist) {
+    if (g_pending_item_index < 0 || g_pending_item_index >= g_music.playlist_count) return 0;
+    char body[160];
+    snprintf(body, sizeof(body), "{\"action\":\"play_playlist\",\"uri\":\"%s\"}", g_music.playlists[g_pending_item_index].uri);
+    musicCommandBody(options, body, "spotify");
+    return 1;
+  }
+
+  if (action == kTouchMusicVolDown) {
+    int target = g_music_volume_pct - 2;
+    if (target < 0) target = 0;
+    g_music_volume_pct = target;
+    musicCommand(options, "volume", target, "smartthings");
+    return 1;
+  }
+
+  if (action == kTouchMusicVolUp) {
+    // Bridge hard-caps soundbar volume at 20%; above that = manual only.
+    int target = g_music_volume_pct + 2;
+    if (target > 20) target = 20;
+    g_music_volume_pct = target;
+    musicCommand(options, "volume", target, "smartthings");
     return 1;
   }
 
@@ -3933,6 +4203,8 @@ void applyInitialView(const char* view) {
     g_active_screen = 3;
   } else if (strcmp(view, "lights") == 0) {
     g_active_screen = 4;
+  } else if (strcmp(view, "music") == 0) {
+    g_active_screen = 5;
   } else if (strcmp(view, "workout") == 0) {
     g_active_list = 1;
   } else if (strcmp(view, "grocery") == 0) {
@@ -3949,6 +4221,8 @@ void initOptions(Options* options) {
   copyText(options->events_url, sizeof(options->events_url), kDefaultEventsUrl);
   copyText(options->toggle_url, sizeof(options->toggle_url), kDefaultToggleUrl);
   options->device_queue_url[0] = '\0';
+  options->spotify_url[0] = '\0';
+  options->smartthings_url[0] = '\0';
   options->read_token[0] = '\0';
   options->toggle_token[0] = '\0';
   copyText(options->cache, sizeof(options->cache), kDefaultCache);
@@ -3971,6 +4245,8 @@ int parseOptions(int argc, char** argv, Options* options) {
     else if (strcmp(argv[i], "--events-url") == 0 && i + 1 < argc) copyText(options->events_url, sizeof(options->events_url), argv[++i]);
     else if (strcmp(argv[i], "--toggle-url") == 0 && i + 1 < argc) copyText(options->toggle_url, sizeof(options->toggle_url), argv[++i]);
     else if (strcmp(argv[i], "--device-queue-url") == 0 && i + 1 < argc) copyText(options->device_queue_url, sizeof(options->device_queue_url), argv[++i]);
+    else if (strcmp(argv[i], "--spotify-url") == 0 && i + 1 < argc) copyText(options->spotify_url, sizeof(options->spotify_url), argv[++i]);
+    else if (strcmp(argv[i], "--smartthings-url") == 0 && i + 1 < argc) copyText(options->smartthings_url, sizeof(options->smartthings_url), argv[++i]);
     else if (strcmp(argv[i], "--read-token") == 0 && i + 1 < argc) copyText(options->read_token, sizeof(options->read_token), argv[++i]);
     else if (strcmp(argv[i], "--toggle-token") == 0 && i + 1 < argc) copyText(options->toggle_token, sizeof(options->toggle_token), argv[++i]);
     else if (strcmp(argv[i], "--cache") == 0 && i + 1 < argc) copyText(options->cache, sizeof(options->cache), argv[++i]);
@@ -4199,6 +4475,7 @@ int main(int argc, char** argv) {
     const int fetched = fetchToCache(dashboard_url, options.read_token, options.cache);
     runDeviceCommands(&options);
     if (g_active_screen == 4) wizRefreshAll();
+    if (g_active_screen == 5) musicNowRefresh(&options);
     if (!renderCachedPayload(&options, fetched ? "live" : "cached/offline")) {
       char lines[kMaxRows][96];
       int count = 0;

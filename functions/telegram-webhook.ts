@@ -33,7 +33,7 @@ export type ClarifyAction = {
 // Nothing is stored - the answer goes back to the Telegram chat.
 export type QueryAction = {
   kind: "query";
-  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "chores" | "chores_all" | "nutrition" | "device_status";
+  query: "grocery" | "todo" | "workout" | "events_today" | "events_range" | "pregnancy_tasks" | "pregnancy_todo" | "chores" | "chores_all" | "nutrition" | "device_status" | "music_status";
   days?: number;
 };
 
@@ -79,7 +79,17 @@ type DeviceAction = {
   color?: string;
 };
 
-type TelegramAction = PlannerAction | PregnancyTaskAction | PregnancyTodoAction | ChoreAction | DeviceAction | CalendarEventAction | ClarifyAction | QueryAction;
+// Phase 4.4: Spotify music control (via spotify-bridge) + soundbar power/volume
+// (via smartthings-bridge). The appliers forward over internal HTTP.
+type MusicAction = {
+  kind: "music";
+  action: "search_play" | "select" | "play" | "pause" | "next" | "prev" | "volume" | "status" | "soundbar_off" | "soundbar_on" | "playlists" | "liked";
+  query?: string;
+  volume?: number;
+  index?: number;
+};
+
+type TelegramAction = PlannerAction | PregnancyTaskAction | PregnancyTodoAction | ChoreAction | DeviceAction | MusicAction | CalendarEventAction | ClarifyAction | QueryAction;
 
 type TelegramUpdate = {
   message?: {
@@ -155,8 +165,9 @@ export const PLANNER_SYSTEM_PROMPT = [
   "For calendar bookings return: {\"kind\":\"calendar\",\"action\":\"create_event\",\"title\":\"Dentist\",\"date\":\"YYYY-MM-DD\",\"time\":\"HH:MM\",\"duration_min\":60,\"all_day\":false,\"location\":\"optional\",\"calendar_slot\":\"optional\"} where time is 24-hour in the owner's timezone given below. For all-day events omit time and set all_day true. Resolve relative dates like 'Friday', 'tomorrow', 'tonight' against the current date/time provided below.",
   "Two people share this dashboard; their calendar names are in the connected-calendar line of the system context. For a booking that is clearly FOR one of them, set \"calendar_slot\" to that person's name, fuzzy-matching spelling (\"keethuu\" -> keethu, \"my wife\" -> the matching name). Weekdays, months and times are NEVER people. Omit calendar_slot when no person is meant - the event then goes to the first (owner) calendar.",
   "If a message mentions a person but does NOT make clear whose calendar the event belongs to (for example \"dinner with keethu\"), do NOT guess: return {\"kind\":\"clarify\",\"question\":\"One short question asking whose calendar - e.g. Keethu's or Dinesh's?\"}. When the message names a calendar explicitly (the word calendar, or \"for <name>\"), never clarify.",
-  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|chores|chores_all|nutrition|device_status\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"chores\" lists today's scheduled chores with their times; set \"days\":1 for chores tomorrow (any day offset 0-6, e.g. \"what chores are there tomorrow\"); \"chores_all\" lists every chore with its full recurring schedule (\"list all the chores\"); \"nutrition\" gives this week's pregnancy nutrition + supplements; \"device_status\" answers questions about the CURRENT light state (the bulb is read from the Kindle screen, not the bot).",
+  "Read-only questions that ask what is ON a list or what events/plans exist in a window (no change requested) return: {\"kind\":\"query\",\"query\":\"grocery|todo|workout|events_today|events_range|pregnancy_tasks|pregnancy_todo|chores|chores_all|nutrition|device_status|music_status\",\"days\":7}. \"events_today\" is for questions about TODAY only. \"events_range\" covers next week, coming days, etc. - set \"days\" to the window length in days: next week/coming week = 7, next 10 days = 10, next fortnight = 14, next month = 30. \"pregnancy_tasks\" lists the pregnancy care checklist; \"pregnancy_todo\" lists the personal pregnancy todos shown on the dashboard DO NOW section; \"chores\" lists today's scheduled chores with their times; set \"days\":1 for chores tomorrow (any day offset 0-6, e.g. \"what chores are there tomorrow\"); \"chores_all\" lists every chore with its full recurring schedule (\"list all the chores\"); \"nutrition\" gives this week's pregnancy nutrition + supplements; \"device_status\" answers questions about the CURRENT light state (the bulb is read from the Kindle screen, not the bot).",
   "For SMART-HOME LIGHTS (WiZ bulbs; a physical action) return {\"kind\":\"device\",\"action\":\"set\",\"target\":\"<bulb name substring or 'all'>\",\"state\":true|false,\"brightness\":<1-100>,\"temp\":<2200-6500 Kelvin>,\"color\":\"white|red|green|blue\"} - include ONLY the fields the message implies: \"lights off\" -> {\"state\":false}; \"dim lights to 50\" -> {\"brightness\":50,\"state\":true}; \"lights warm\" -> {\"temp\":2700,\"state\":true}; \"lights blue\" -> {\"color\":\"blue\",\"state\":true}; \"night light\" -> {\"brightness\":6,\"temp\":2200,\"state\":true}; \"bedroom light off\" -> {\"target\":\"bedroom\",\"state\":false}. NEVER guess a toggle when unsure what the message wants - clarify instead; wrong light switches are worse than a question.",
+  "For MUSIC (Spotify playback on the soundbar) return {\"kind\":\"music\",...}: {\"kind\":\"music\",\"action\":\"search_play\",\"query\":\"<song or artist>\"} when the message plays music (\"play <song> on soundbar\", \"play abba on spotify\"); \"pause\"/\"play\"/\"next\"/\"prev\" for playback control; \"soundbar_off\" turns the SOUNDBAR off (physical device); {\"kind\":\"music\",\"action\":\"volume\",\"volume\":<0-100>} sets SOUNDBAR volume; use query kind \"music_status\" for what's-playing questions. Do NOT use music for playlist management.",
   "For SCHEDULED CHORES (time-bound tasks with reminders, shown on the dashboard CHORES panel) return {\"kind\":\"chore\",...}. {\"kind\":\"chore\",\"action\":\"add\",\"text\":\"<chore text>\",\"pattern\":\"daily|weekly|once\",\"days\":\"<csv mo,tu,we,th,fr,sa,su when weekly>\",\"once_date\":\"<YYYY-MM-DD when once>\",\"start_min\":<minutes from midnight>,\"end_min\":<minutes from midnight>} when the message adds a chore with a recurrence or time (e.g. \"add chore clean kitchen every saturday\", \"soak the cashew everyday at 10pm\", \"take out trash on tuesday thursday and saturday\"). {\"kind\":\"chore\",\"action\":\"done\",\"text\":\"<chore words>\"} marks one of today's chores done; \"skip\" mutes it for today; \"delete\" removes the chore entirely. Chore messages usually contain the word chore, or words like everyday/every <weekday>/tomorrow/at <time>. These chores are DIFFERENT from the plain todo list (no time, lives indefinitely). Chore time rules: a single point time (\"at 10pm\") is start_min=1320 with end_min=1440 (chores nag until midnight); a window (\"from 10am to 10pm\") sets both; when the message names NO time, OMIT start_min and end_min entirely (server defaults 10:00-22:00). NEVER invent a duration (no start+60) or an all-day 00:00-23:59 window yourself.",
   "For personal pregnancy todos return {\"kind\":\"pregnancy_todo\",\"action\":\"add\",\"text\":\"<todo text>\"} when the message asks to ADD something to the pregnancy todos/dashboard list (e.g. \"add buy vitamins to pregnancy todo\"), and {\"kind\":\"pregnancy_todo\",\"action\":\"done\",\"text\":\"<todo words>\"} when it marks one of those personal todos as done. These are separate from the pregnancy care checklist tasks.",
   "For pregnancy care tasks return: {\"kind\":\"pregnancy_task\",\"action\":\"complete_task\",\"task\":\"<task words>\"} when the message marks a pregnancy care task as done (kraamzorg booking, kinkhoest vaccination, GBS swab, scans, hospital registration, baby shopping, hospital bag). Fuzzy-match the task words against the connected task list in the system context.",
@@ -193,6 +204,17 @@ async function parseAction(message: string, slots: string[]): Promise<TelegramAc
   // no LLM latency. Mutations and ambiguous messages go to the LLM.
   const queryAction = parseQueryMessage(message);
   if (queryAction) return queryAction;
+
+  // Numbered pick from a previous Spotify search list ("play 2") — must not
+  // detour through the LLM (it would ask "play what?").
+  const pick = message.trim().match(/^play\s+(\d{1})$/);
+  if (pick) return { kind: "music", action: "select", index: Number(pick[1]) };
+  if (/^(?:playlists|my playlists)$/.test(message.trim().toLowerCase())) {
+    return { kind: "music", action: "playlists" };
+  }
+  if (/^(?:liked songs|saved songs|liked)$/.test(message.trim().toLowerCase())) {
+    return { kind: "music", action: "liked" };
+  }
 
   const zaiKey = Deno.env.get("ZAI_API_KEY");
   if (!zaiKey) {
@@ -266,6 +288,7 @@ async function applyTelegramAction(admin: any, action: TelegramAction): Promise<
   if (action.kind === "pregnancy_todo") return applyPregnancyTodoAction(admin, action);
   if (action.kind === "chore") return applyChoreAction(admin, action);
   if (isDeviceAction(action)) return applyDeviceAction(admin, action);
+  if (isMusicAction(action)) return applyMusicAction(action);
   if (isEventAction(action)) return applyCalendarCreateAction(admin, action);
   return applyPlannerAction(admin, action);
 }
@@ -297,6 +320,9 @@ async function applyQueryAction(admin: any, action: QueryAction): Promise<string
   }
   if (action.query === "device_status") {
     return "💡 Live light state is on the Kindle LIGHTS screen — the bot can't see the bulb directly.";
+  }
+  if (action.query === "music_status") {
+    return bridgeCall("spotify-bridge", { action: "status" });
   }
   if (action.query === "nutrition") return nutritionReply(dashboardLocalDate());
   return queryListItems(admin, action.query);
@@ -976,6 +1002,9 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
   const deviceAction = parseDeviceAction(normalized);
   if (deviceAction) return deviceAction;
 
+  const musicAction = parseMusicAction(normalized);
+  if (musicAction) return musicAction;
+
   const hasPlannerVerb = /\b(add|put|include|buy|get|need|mark|check off|complete|completed|done|undo|uncheck|delete|remove|drop|clear|empty|reset)\b/.test(lower);
   // Question-shaped messages are lookups, not planner adds — let the LLM route them.
   const questionShaped = /^(what|any|show|is|are|do|does|list|read|grab|give|send|see|check)\b/.test(lower);
@@ -1041,6 +1070,9 @@ export function parseQueryMessage(message: string): QueryAction | null {
   // Live bulb state lives on the Kindle (LAN UDP) — the bot points there.
   if (/\b(are|is)\s+(the\s+)?lights?\s+(on|off)\b|\blight(s)? status\b/.test(lower)) {
     return { kind: "query", query: "device_status" };
+  }
+  if (/\bwhat'?s (?:now )?playing\b|\bnow playing\b/.test(lower)) {
+    return { kind: "query", query: "music_status" };
   }
   return null;
 }
@@ -1853,8 +1885,7 @@ async function applyDeviceAction(admin: any, action: DeviceAction): Promise<stri
   return `💡 ${targetLabel} → ${describeDeviceParams(action)}`;
 }
 
-function validateDeviceAction(input: unknown): DeviceAction | null {
-  if (!input || typeof input !== "object") return null;
+function validateDeviceAction(input: unknown): DeviceAction | null {  if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<DeviceAction>;
   if (candidate.kind !== "device") return null;
   if (candidate.action !== "set") return null;
@@ -1882,6 +1913,132 @@ function validateDeviceAction(input: unknown): DeviceAction | null {
   return action;
 }
 
+// ---- Phase 4.4: music (Spotify playback via spotify-bridge, soundbar power/
+// volume via smartthings-bridge) ----
+
+function isMusicAction(action: TelegramAction): action is MusicAction {
+  return action.kind === "music";
+}
+
+// Deterministic fallback for obvious music commands. Bare "play X" without a
+// music/soundbar hint stays with the LLM (calendar/events also "play" nothing,
+// but songs don't need a device suffix to be obvious once the LLM sees them).
+export function parseMusicAction(message: string): MusicAction | null {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  if (hasExplicitList(lower)) return null;
+
+  const soundbarVolume = lower.match(/^(?:soundbar\s+)?volume\s+(\d{1,3})\s*%?$/);
+  if (soundbarVolume) {
+    const value = Number(soundbarVolume[1]);
+    if (value > 100) return null;
+    return { kind: "music", action: "volume", volume: value };
+  }
+  if (/^(?:soundbar|speaker)\s+off$/.test(lower)) {
+    return { kind: "music", action: "soundbar_off" };
+  }
+  if (/^(?:soundbar|speaker)\s+on$/.test(lower)) {
+    return { kind: "music", action: "soundbar_on" };
+  }
+
+  const searchPlay = normalized.match(/^play\s+(.+?)\s+on\s+(?:the\s+)?(?:soundbar|speaker|spotify)$/i);
+  if (searchPlay && searchPlay[1].trim()) {
+    return { kind: "music", action: "search_play", query: searchPlay[1].trim() };
+  }
+
+  // numbered pick from a previous search list
+  const pick = normalized.match(/^play\s+(\d{1})$/);
+  if (pick) {
+    return { kind: "music", action: "select", index: Number(pick[1]) };
+  }
+  if (/^(?:playlists|saved songs|liked songs|liked)$/.test(lower)) {
+    return { kind: "music", action: lower.includes("liked") ? "liked" : "playlists" };
+  }
+
+  if (/^next\b|^skip (?:the )?(?:track|song)$/.test(lower)) return { kind: "music", action: "next" };
+  if (/^(?:previous|prev)\b|^back(?: one)? (?:track|song)$/.test(lower)) return { kind: "music", action: "prev" };
+  if (/^(?:resume|continue) (?:the )?(?:music|song|playback|spotify)$|^resume$/.test(lower)) return { kind: "music", action: "play" };
+  if (/^(?:pause|stop) (?:the )?(?:music|song|playback|spotify)$|^pause$/.test(lower)) return { kind: "music", action: "pause" };
+
+  const spotifyVolume = lower.match(/^spotify\s+volume\s+(\d{1,3})\s*%?$/);
+  if (spotifyVolume) {
+    const value = Number(spotifyVolume[1]);
+    if (value > 100) return null;
+    return { kind: "music", action: "volume", volume: value, query: "spotify" };
+  }
+  return null;
+}
+
+function bridgeUrl(fn: string): string {
+  const base = requiredEnv("INSFORGE_BASE_URL").replace(/\/$/, "");
+  return `${base}/functions/${fn}`;
+}
+
+async function bridgeCall(fn: string, body: Record<string, unknown>): Promise<string> {
+  const res = await fetch(bridgeUrl(fn), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-dashboard-read-token": requiredEnv("DASHBOARD_READ_TOKEN"),
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  const data = await res.json().catch(() => ({}));
+  return data.summary ?? (res.ok ? "Done." : `Bridge failed (${res.status}).`);
+}
+
+async function applyMusicAction(action: MusicAction): Promise<string> {
+  const soundbarActions = new Set(["volume", "soundbar_off"]);
+  const isSoundbar = soundbarActions.has(action.action) || action.query === "spotify";
+  void isSoundbar;
+  if (action.action === "soundbar_off") {
+    return bridgeCall("smartthings-bridge", { action: "off" });
+  }
+  if (action.action === "soundbar_on") {
+    return bridgeCall("smartthings-bridge", { action: "on" });
+  }
+  if (action.action === "volume" && action.query !== "spotify") {
+    // Soundbar volume is hard-capped at 20% (also clamped inside the bridge).
+    const capped = Math.min(20, action.volume ?? 0);
+    return bridgeCall("smartthings-bridge", { action: "volume", value: capped });
+  }
+  if (action.action === "volume" && action.query === "spotify") {
+    return bridgeCall("spotify-bridge", { action: "volume", volume: action.volume });
+  }
+  const body: Record<string, unknown> = { action: action.action };
+  if (action.query) body.query = action.query;
+  if (action.volume !== undefined) body.volume = action.volume;
+  if (action.index !== undefined) body.index = action.index;
+  return bridgeCall("spotify-bridge", body);
+}
+
+function validateMusicAction(input: unknown): MusicAction | null {
+  if (!input || typeof input !== "object") return null;
+  const candidate = input as Partial<MusicAction>;
+  if (candidate.kind !== "music") return null;
+  const validActions = ["search_play", "select", "play", "pause", "next", "prev", "volume", "status", "soundbar_off", "soundbar_on", "playlists", "liked"] as const;
+  const found = validActions.find((a) => a === candidate.action);
+  if (!found) return null;
+  const action: MusicAction = { kind: "music", action: found };
+  if (found === "search_play") {
+    const query = typeof candidate.query === "string" ? candidate.query.trim().slice(0, 100) : "";
+    if (!query) return null;
+    action.query = query;
+  }
+  if (found === "select") {
+    const index = Number(candidate.index ?? 0);
+    if (!Number.isFinite(index) || index < 1 || index > 9) return null;
+    action.index = Math.round(index);
+  }
+  if (found === "volume") {
+    const volume = Number(candidate.volume);
+    if (!Number.isFinite(volume) || volume < 0 || volume > 100) return null;
+    action.volume = Math.round(volume);
+  }
+  return action;
+}
+
 function validateQueryAction(input: unknown): QueryAction | null {
   if (!input || typeof input !== "object") return null;
   const candidate = input as Partial<QueryAction>;
@@ -1891,7 +2048,7 @@ function validateQueryAction(input: unknown): QueryAction | null {
     if (!Number.isFinite(days) || !Number.isInteger(days) || days < 1 || days > 90) return null;
     return { kind: "query", query: "events_range", days };
   }
-  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition" || candidate.query === "chores_all" || candidate.query === "device_status") {
+  if (candidate.query === "pregnancy_tasks" || candidate.query === "pregnancy_todo" || candidate.query === "nutrition" || candidate.query === "chores_all" || candidate.query === "device_status" || candidate.query === "music_status") {
     return { kind: "query", query: candidate.query };
   }
   if (candidate.query === "chores") {
@@ -1906,7 +2063,7 @@ function validateQueryAction(input: unknown): QueryAction | null {
 }
 
 export function validateTelegramAction(input: unknown): TelegramAction | null {
-  return validateQueryAction(input) ?? validatePregnancyTodoAction(input) ?? validateChoreAction(input) ?? validateDeviceAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
+  return validateQueryAction(input) ?? validatePregnancyTodoAction(input) ?? validateChoreAction(input) ?? validateDeviceAction(input) ?? validateMusicAction(input) ?? validatePregnancyTaskAction(input) ?? validateClarifyAction(input) ?? validateEventAction(input) ?? validatePlannerAction(input);
 }
 
 export function validateEventAction(input: unknown, timeZone: string = dashboardTimezone()): CalendarEventAction | null {

@@ -109,6 +109,7 @@ type DashboardPayload = {
   tasks: PregnancyTaskPayload[];
   pregnancy_todos: PregnancyTodoPayload[];
   chores: ChorePayload[];
+  spotify: SpotifyPayload | null;
   nutrition: PregnancyNutritionPayload;
   lists: Array<{
     key: ListKey;
@@ -139,6 +140,91 @@ type ChorePayload = {
   done: boolean;
   overdue: boolean;
 };
+
+// Phase 4.4: Spotify now-playing (read at fetch time; the soundbar streams
+// directly from Spotify — nothing audio-related crosses this backend).
+type SpotifyPayload = {
+  track: string;
+  artist: string;
+  is_playing: boolean;
+  progress_ms: number;
+  duration_ms: number;
+  device: string;
+  playlists: Array<{ name: string; uri: string }>;
+};
+
+let spotifyTokenCache: { token: string; expires: number } | null = null;
+
+async function spotifyAccessToken(): Promise<string | null> {
+  const refresh = Deno.env.get("SPOTIFY_REFRESH_TOKEN");
+  const clientId = Deno.env.get("SPOTIFY_CLIENT_ID");
+  const clientSecret = Deno.env.get("SPOTIFY_CLIENT_SECRET");
+  if (!refresh || !clientId || !clientSecret) return null;
+  if (spotifyTokenCache && Date.now() < spotifyTokenCache.expires - 60_000) return spotifyTokenCache.token;
+  try {
+    const res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.access_token) return null;
+    spotifyTokenCache = { token: data.access_token, expires: Date.now() + (data.expires_in ?? 3600) * 1000 };
+    return spotifyTokenCache.token;
+  } catch {
+    return null;
+  }
+}
+
+async function spotifyBlock(): Promise<SpotifyPayload | null> {
+  try {
+    const token = await spotifyAccessToken();
+    if (!token) return null;
+    const res = await fetch("https://api.spotify.com/v1/me/player", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.status === 204 || res.status === 202) return null;
+    if (!res.ok) return null;
+    const data = await res.json();
+    const item = data.item ?? {};
+    if (!item.name) return null;
+    return {
+      track: String(item.name).slice(0, 80),
+      artist: String((item.artists ?? []).map((a: { name: string }) => a.name)[0] ?? "").slice(0, 60),
+      is_playing: Boolean(data.is_playing),
+      progress_ms: data.progress_ms ?? 0,
+      duration_ms: item.duration_ms ?? 0,
+      device: String(data.device?.name ?? "").slice(0, 40),
+      playlists: await spotifyPlaylists(token),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Saved playlists for the Kindle MUSIC screen (tap = play on the soundbar).
+async function spotifyPlaylists(token: string): Promise<Array<{ name: string; uri: string }>> {
+  try {
+    const res = await fetch("https://api.spotify.com/v1/me/playlists?limit=5", {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.items ?? []).map((pl: { name: string; uri: string }) => ({
+      name: String(pl.name).slice(0, 40),
+      uri: String(pl.uri),
+    }));
+  } catch {
+    return [];
+  }
+}
 
 type ChoreRow = {
   id: string;
@@ -298,6 +384,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       today,
       dashboardNowMin()
     ),
+    spotify: await spotifyBlock(),
     nutrition: nutritionBlock(today),
     lists: (["todo", "workout", "grocery"] as const).map((key) => ({
       key,
@@ -326,6 +413,7 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       tasks: payloadWithoutVersion.tasks,
       pregnancy_todos: payloadWithoutVersion.pregnancy_todos,
       chores: payloadWithoutVersion.chores,
+      spotify: payloadWithoutVersion.spotify,
       nutrition: payloadWithoutVersion.nutrition,
       lists: payloadWithoutVersion.lists,
       calendar: payloadWithoutVersion.calendar
