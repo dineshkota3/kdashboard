@@ -78,7 +78,9 @@ enum TouchAction {
   kTouchMusicPrev = 29,
   kTouchMusicVolDown = 30,
   kTouchMusicVolUp = 31,
-  kTouchMusicPlaylist = 32
+  kTouchMusicPlaylist = 32,
+  kTouchSoundbarOn = 33,
+  kTouchSoundbarOff = 34
 };
 
 struct Item {
@@ -243,7 +245,8 @@ int g_wiz_ready = 0;            // discovery/load attempted once
 // Phase 4.4: live Spotify now-playing (server reads Spotify; Kindle shows it).
 MusicState g_music;
 int g_music_ready = 0;          // live now-playing fetched once
-int g_music_volume_pct = 12;    // last-known soundbar volume (bridge caps at 30)
+int g_music_volume_pct = 12;    // last-known soundbar volume (bridge caps at 20)
+int g_soundbar_on = 1;          // SmartThings switch state of the soundbar
 
 struct Options {
   char url[256];
@@ -2694,6 +2697,34 @@ void musicNowRefresh(const Options* options) {
   }
   free(payload);
   unlink(list_path);
+
+  // Soundbar power/volume from SmartThings (separate bridge).
+  if (options->smartthings_url[0]) {
+    char st_path[128];
+    snprintf(st_path, sizeof(st_path), "/tmp/kindle-dashboard-soundbar.json");
+    char st_command[640];
+    snprintf(st_command, sizeof(st_command),
+             "curl -fsSL --connect-timeout 8 --max-time 12 -H 'x-dashboard-read-token: %s' -o %s %s",
+             options->read_token, st_path, options->smartthings_url);
+    if (system(st_command) == 0) {
+      char* st_payload = readFile(st_path);
+      if (st_payload) {
+        const char* status_value = findKeyInRange(st_payload, NULL, "status");
+        if (status_value && *status_value == '{') {
+          const char* status_end = matchingClose(status_value, '}');
+          if (status_end) {
+            char state_buf[16];
+            extractString(status_value, status_end, "state", state_buf, sizeof(state_buf), "off");
+            g_soundbar_on = state_buf[0] == 'o' && state_buf[1] == 'n';
+            const int vol = extractInt(status_value, status_end, "volume", -1);
+            if (vol >= 0) g_music_volume_pct = vol;
+          }
+        }
+        free(st_payload);
+      }
+    }
+    unlink(st_path);
+  }
 }
 
 // Fire a music command at the bridge (fire-and-forget POST, backgrounded).
@@ -2761,9 +2792,13 @@ void drawMusicDashboard(Canvas* canvas, const Dashboard* dashboard, const char* 
   snprintf(artist_line, sizeof(artist_line), "%s  -  %s", artist_upper, m->device);
   drawTextClipped(canvas, card_x + 20, card_y + 96, card_w - 40, artist_line, 3, 0);
 
+  char sb_line[96];
+  snprintf(sb_line, sizeof(sb_line), "SOUNDBAR: %s  -  VOL %d%%", g_soundbar_on ? "ON" : "OFF", g_music_volume_pct);
+  drawTextClipped(canvas, card_x + 20, card_y + 140, card_w - 40, sb_line, 3, 0);
+
   // progress bar
   if (m->duration_ms > 0) {
-    const int bar_y = card_y + 150;
+    const int bar_y = card_y + 186;
     strokeRect(canvas, card_x + 20, bar_y, card_w - 40, 14, 1, 0);
     const int fill = (int)(((long long)m->progress_ms * (card_w - 44)) / m->duration_ms);
     if (fill > 0) fillRect(canvas, card_x + 22, bar_y + 2, fill, 10, 0);
@@ -2775,28 +2810,34 @@ void drawMusicDashboard(Canvas* canvas, const Dashboard* dashboard, const char* 
   }
 
   // transport buttons
-  const int row_y = card_y + 210;
-  const int btn_w = (card_w - 40 - 3 * 10) / 4;
-  const char* labels[4] = {m->is_playing ? "PAUSE" : "PLAY", "PREV", "NEXT", "VOL+"};
-  const TouchAction actions[4] = {kTouchMusicToggle, kTouchMusicPrev, kTouchMusicNext, kTouchMusicVolUp};
-  for (int i = 0; i < 4; i++) {
+  const int row_y = card_y + 250;
+  const int btn_w = (card_w - 40 - 2 * 10) / 3;
+  const char* labels[3] = {m->is_playing ? "PAUSE" : "PLAY", "PREV", "NEXT"};
+  const TouchAction actions[3] = {kTouchMusicToggle, kTouchMusicPrev, kTouchMusicNext};
+  for (int i = 0; i < 3; i++) {
     const int bx = card_x + 20 + i * (btn_w + 10);
     strokeRect(canvas, bx, row_y, btn_w, 54, 2, 0);
     drawTextCentered(canvas, bx + btn_w / 2, row_y + 18, btn_w - 10, labels[i], 2, 0);
     addTouchRegion(Rect{bx, row_y, btn_w, 54}, actions[i], -1, -1, "", 0);
   }
+
+  // soundbar volume + power
   const int row2_y = row_y + 66;
-  const int vol_labels_n = 2;
-  const char* vol_labels[2] = {"VOL-", "SOUNDBAR OFF"};
-  const TouchAction vol_actions[2] = {kTouchMusicVolDown, kTouchMusicVolUp};
-  (void)vol_labels_n;
-  const int vol_w = (card_w - 40 - 10) / 2;
-  for (int i = 0; i < 2; i++) {
-    const int bx = card_x + 20 + i * (vol_w + 10);
-    strokeRect(canvas, bx, row2_y, vol_w, 54, 2, 0);
-    drawTextCentered(canvas, bx + vol_w / 2, row2_y + 18, vol_w - 10, i == 0 ? "VOL-" : "SOUNDBAR OFF", 2, 0);
-    addTouchRegion(Rect{bx, row2_y, vol_w, 54}, i == 0 ? kTouchMusicVolDown : kTouchMusicVolUp, -1, -1, "", 0);
-  }
+  const int half_w = (card_w - 40 - 10) / 2;
+  strokeRect(canvas, card_x + 20, row2_y, half_w, 54, 2, 0);
+  drawTextCentered(canvas, card_x + 20 + half_w / 2, row2_y + 18, half_w - 10, "VOL-", 2, 0);
+  addTouchRegion(Rect{card_x + 20, row2_y, half_w, 54}, kTouchMusicVolDown, -1, -1, "", 0);
+  strokeRect(canvas, card_x + 20 + half_w + 10, row2_y, half_w, 54, 2, 0);
+  drawTextCentered(canvas, card_x + 20 + half_w + 10 + half_w / 2, row2_y + 18, half_w - 10, "VOL+", 2, 0);
+  addTouchRegion(Rect{card_x + 20 + half_w + 10, row2_y, half_w, 54}, kTouchMusicVolUp, -1, -1, "", 0);
+
+  const int row3_y = row2_y + 66;
+  strokeRect(canvas, card_x + 20, row3_y, half_w, 54, 2, 0);
+  drawTextCentered(canvas, card_x + 20 + half_w / 2, row3_y + 18, half_w - 10, "SB ON", 2, 0);
+  addTouchRegion(Rect{card_x + 20, row3_y, half_w, 54}, kTouchSoundbarOn, -1, -1, "", 0);
+  strokeRect(canvas, card_x + 20 + half_w + 10, row3_y, half_w, 54, 2, 0);
+  drawTextCentered(canvas, card_x + 20 + half_w + 10 + half_w / 2, row3_y + 18, half_w - 10, "SB OFF", 2, 0);
+  addTouchRegion(Rect{card_x + 20 + half_w + 10, row3_y, half_w, 54}, kTouchSoundbarOff, -1, -1, "", 0);
 
   // Saved playlists (tap = play on the soundbar)
   int pl_y = row2_y + 66;
@@ -2813,10 +2854,9 @@ void drawMusicDashboard(Canvas* canvas, const Dashboard* dashboard, const char* 
   if (m->playlist_count == 0) {
     drawTextClipped(canvas, card_x + 20, pl_y, 300, "NO SAVED PLAYLISTS", 2, 0);
   }
-  (void)vol_actions;
 
   char note[96];
-  snprintf(note, sizeof(note), "CONTROL VIA TELEGRAM // %s", m->is_playing ? "STREAMING" : "IDLE");
+  snprintf(note, sizeof(note), "VOL CAPPED AT 20 // %s", m->is_playing ? "STREAMING" : "IDLE");
   drawTextCentered(canvas, shell_x + shell_w / 2, card_y + card_h - 40, shell_w - 44, note, 2, 0);
 }
 
@@ -3827,6 +3867,10 @@ int handlePendingTouch(const Options* options) {
   if (action == kTouchMusicToggle || action == kTouchMusicNext || action == kTouchMusicPrev) {
     const char* cmd = action == kTouchMusicToggle ? (g_music.is_playing ? "pause" : "play")
                                                  : (action == kTouchMusicNext ? "next" : "prev");
+    if (cmd[0] == 'p' && cmd[1] == 'l' && !g_soundbar_on) {
+      // PLAY with the soundbar off: power it on first (SmartThings), then Spotify plays.
+      musicCommand(options, "on", -1, "smartthings");
+    }
     musicCommand(options, cmd, -1, "");
     musicNowRefresh(options);
     return 1;
@@ -3837,6 +3881,18 @@ int handlePendingTouch(const Options* options) {
     char body[160];
     snprintf(body, sizeof(body), "{\"action\":\"play_playlist\",\"uri\":\"%s\"}", g_music.playlists[g_pending_item_index].uri);
     musicCommandBody(options, body, "spotify");
+    return 1;
+  }
+
+  if (action == kTouchSoundbarOn) {
+    musicCommand(options, "on", -1, "smartthings");
+    g_soundbar_on = 1;
+    return 1;
+  }
+
+  if (action == kTouchSoundbarOff) {
+    musicCommand(options, "off", -1, "smartthings");
+    g_soundbar_on = 0;
     return 1;
   }
 

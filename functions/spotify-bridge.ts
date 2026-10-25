@@ -40,6 +40,18 @@ async function spotifyApi(path: string, init: RequestInit = {}): Promise<Respons
   });
 }
 
+// Bounded wait for the soundbar to (re)register with Spotify Connect after
+// power-on (~30-60s). Total function time stays under ~45s.
+async function waitForSoundbar(maxWaitMs = 40000): Promise<string | null> {
+  const deadline = Date.now() + maxWaitMs;
+  let id = await soundbarDeviceId();
+  while (!id && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 8000));
+    id = await soundbarDeviceId();
+  }
+  return id;
+}
+
 // The soundbar is the default playback target; find it by name hint.
 async function soundbarDeviceId(): Promise<string | null> {
   const hint = (Deno.env.get("SPOTIFY_DEVICE_HINT") || "soundbar").toLowerCase();
@@ -176,7 +188,7 @@ async function runCommand(body: { action?: string; query?: string; volume?: numb
   if (action === "search_play") {
     const query = (body.query ?? "").trim();
     if (!query) return "What should I play?";
-    const deviceId = (await soundbarDeviceId()) ?? "";
+    let deviceId = (await soundbarDeviceId()) ?? "";
     const search = await spotifyApi(`/search?q=${encodeURIComponent(query)}&type=track&limit=5`);
     if (!search.ok) return `Search failed (${search.status}).`;
     const tracks = (await search.json()).tracks?.items ?? [];
@@ -186,6 +198,7 @@ async function runCommand(body: { action?: string; query?: string; volume?: numb
       artist: t.artists?.[0]?.name ?? "",
       uri: t.uri,
     }));
+    if (!deviceId) deviceId = (await waitForSoundbar(20000)) ?? "";
     if (options.length > 1) {
       await storePending(options);
       const list = options.map((o: { name: string; artist: string }, i: number) => `${i + 1}. ${o.name} — ${o.artist}`).join("\n");
@@ -201,20 +214,30 @@ async function runCommand(body: { action?: string; query?: string; volume?: numb
     if (!play.ok && play.status !== 202) return `Play failed (${play.status}).`;
     return `▶️ ${options[0].name} — ${options[0].artist}`;
   }
-  if (action === "pause") {
-    await spotifyApi("/me/player/pause", { method: "PUT" });
-    return "⏸️ Paused.";
-  }
-  if (action === "play") {
-    await spotifyApi("/me/player/play", { method: "PUT" });
-    return "▶️ Playing.";
-  }
-  if (action === "next") {
-    await spotifyApi("/me/player/next", { method: "POST" });
-    return "⏭️ Next track.";
-  }
-  if (action === "prev") {
-    await spotifyApi("/me/player/previous", { method: "POST" });
+  if (action === "pause" || action === "play" || action === "next" || action === "prev") {
+    // Target the soundbar explicitly: when it has no active Spotify session
+    // (idle soundbars unregister), bare commands do nothing. Transfer first
+    // to wake the session, then run the command against its device id.
+    let deviceId = (await soundbarDeviceId()) ?? "";
+    if (!deviceId && action !== "pause") {
+      deviceId = (await waitForSoundbar()) ?? "";
+    }
+    if (!deviceId) {
+      return "Soundbar not connected to Spotify — play a song once from the Spotify app to wake it.";
+    }
+    if (action === "pause") {
+      await spotifyApi(`/me/player/pause?device_id=${deviceId}`, { method: "PUT" });
+      return "⏸️ Paused.";
+    }
+    if (action === "play") {
+      await spotifyApi("/me/player", { method: "PUT", body: JSON.stringify({ device_ids: [deviceId], play: true }) });
+      return "▶️ Playing on the soundbar.";
+    }
+    if (action === "next") {
+      await spotifyApi(`/me/player/next?device_id=${deviceId}`, { method: "POST" });
+      return "⏭️ Next track.";
+    }
+    await spotifyApi(`/me/player/previous?device_id=${deviceId}`, { method: "POST" });
     return "⏮️ Previous track.";
   }
   if (action === "volume") {
