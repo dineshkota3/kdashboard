@@ -76,3 +76,4 @@ Investigate before deploying more if, mid-cycle:
 | 2026-10-19 | 11 | 2,905 | 335 MB | 13.5 MB | Phase 4.1 scheduled chores: 4 deploys + E2E + new 30-min chore-reminders cron (48/day = ~1,488/mo owner-sanctioned). Pace ~275 calls/day → ~9% calls at cycle end. No breach risk. |
 | 2026-10-20 | 12 | 3,135 | 340 MB | 13.5 MB | Phase 4.1 hardening: LLM-first routing + clarify, day-aware chores queries; 3 webhook deploys + E2E. Pace ~260 calls/day incl. the chore cron → ~8% calls at cycle end. No breach risk. |
 | 2026-10-24 | 16 | 3,695 | 345 MB | 13.5 MB | Phase 4.2 WiZ lights: migration + 4 deploys + tests (device install pending). Light commands ≈ 2 calls each, negligible. No breach risk. |
+| 2026-10-25 | 17 | 4,622 | ~350 MB | 13.6 MB | Phase 4.4 Spotify: bridges + webhook + payload deploys + OAuth + E2E. Music cmds ~2 calls each; no new cron. No breach risk. Roborock 4.3 parked (account 2FA blocks API login; resumes via session cache). |
