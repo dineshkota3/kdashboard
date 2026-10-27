@@ -3,17 +3,66 @@
 // GET /devices once). Endpoint auth: DASHBOARD_READ_TOKEN like the other feeds.
 
 const ST_API = "https://api.smartthings.com/v1";
+const ST_OAUTH_TOKEN = "https://api.smartthings.com/oauth/token";
 
-function stHeaders(): HeadersInit {
-  return { Authorization: `Bearer ${requiredEnv("ST_PAT")}`, "Content-Type": "application/json" };
+let cachedStToken: { token: string; expires: number } | null = null;
+
+// SmartThings OAuth: access tokens last 24h, refresh tokens rotate on use.
+// The current refresh token lives in the st_session table (persisted by this
+// function after every refresh); ST_CLIENT_ID/SECRET bootstrap the session.
+async function stAccessToken(): Promise<string> {
+  if (cachedStToken && Date.now() < cachedStToken.expires - 120_000) return cachedStToken.token;
+  const { createAdminClient } = await import("npm:@insforge/sdk");
+  const admin = createAdminClient({ baseUrl: requiredEnv("INSFORGE_BASE_URL"), apiKey: requiredEnv("INSFORGE_API_KEY") });
+  const { data: rows } = await admin.database.from("st_session").select("refresh_token").eq("id", "default").limit(1);
+  const refresh = rows?.[0]?.refresh_token;
+  if (typeof refresh !== "string" || !refresh) {
+    throw new Error("SmartThings not connected — run scripts/connect-smartthings.mjs once.");
+  }
+  const res = await fetch(ST_OAUTH_TOKEN, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      client_id: requiredEnv("ST_CLIENT_ID"),
+      client_secret: requiredEnv("ST_CLIENT_SECRET"),
+      refresh_token: refresh,
+    }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`smartthings token refresh failed: ${res.status} ${errBody.slice(0, 100)}`);
+  }
+  const data = await res.json();
+  if (data.refresh_token) {
+    await admin.database.from("st_session").update({ refresh_token: data.refresh_token, updated_at: new Date().toISOString() }).eq("id", "default");
+  }
+  cachedStToken = { token: data.access_token, expires: Date.now() + (data.expires_in ?? 86400) * 1000 };
+  return cachedStToken.token;
+}
+
+async function stHeaders(): Promise<HeadersInit> {
+  return { Authorization: `Bearer ${await stAccessToken()}`, "Content-Type": "application/json" };
 }
 
 async function st(path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`${ST_API}${path}`, {
     ...init,
-    headers: { ...stHeaders(), ...(init.headers ?? {}) },
+    headers: { ...(await stHeaders()), ...(init.headers ?? {}) },
     signal: AbortSignal.timeout(8000),
   });
+  if (res.status === 401) {
+    // token went stale mid-flight: force refresh once
+    cachedStToken = null;
+    const res2 = await fetch(`${ST_API}${path}`, {
+      ...init,
+      headers: { ...(await stHeaders()), ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res2.ok) throw new Error(`smartthings ${path} -> ${res2.status}`);
+    return res2.json();
+  }
   if (!res.ok) throw new Error(`smartthings ${path} -> ${res.status}`);
   return res.json();
 }

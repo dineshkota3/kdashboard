@@ -7,6 +7,7 @@ type PlannerAction = {
   items: string[];
   all_lists?: boolean;
   store?: string;
+  index?: number; // Phase 4.4: 1-based position in the numbered list reply
 };
 
 export type CalendarEventAction = {
@@ -59,6 +60,7 @@ type ChoreAction = {
   kind: "chore";
   action: "add" | "done" | "skip" | "delete";
   text: string;
+  index?: number; // 1-based position in the numbered "chores" reply
   pattern?: "daily" | "weekly" | "once";
   days?: string;
   once_date?: string;
@@ -209,6 +211,15 @@ async function parseAction(message: string, slots: string[]): Promise<TelegramAc
   // detour through the LLM (it would ask "play what?").
   const pick = message.trim().match(/^play\s+(\d{1})$/);
   if (pick) return { kind: "music", action: "select", index: Number(pick[1]) };
+
+  // Numbered list control ("todo done 1", "chore done 2") — deterministic.
+  const listIndex = parseListIndexAction(message);
+  if (listIndex) return listIndex;
+  const choreNum = message.trim().replace(/\s+/g, " ").toLowerCase().match(/^chores?\s+(done|skip|delete|remove)\s*[-–:]?\s*(\d{1,2})$/);
+  if (choreNum) {
+    const act = choreNum[1] === "done" ? "done" : choreNum[1] === "skip" ? "skip" : "delete";
+    return { kind: "chore", action: act, text: "", index: Number(choreNum[2]) };
+  }
   if (/^(?:playlists|my playlists)$/.test(message.trim().toLowerCase())) {
     return { kind: "music", action: "playlists" };
   }
@@ -420,7 +431,7 @@ async function queryListItems(admin: any, listKey: "grocery" | "todo" | "workout
   }
 
   const label = plannerListLabel(listKey);
-  return `📝 ${label.charAt(0).toUpperCase() + label.slice(1)}:\n${items.map((item) => `• ${item.text}`).join("\n")}`;
+  return `📝 ${label.charAt(0).toUpperCase() + label.slice(1)}:\n${items.map((item, i) => `${i + 1}. ${item.text}`).join("\n")}`;
 }
 
 async function queryEventsWindow(admin: any, days: number): Promise<string> {
@@ -757,6 +768,40 @@ async function applyPlannerAction(admin: any, action: PlannerAction): Promise<st
     return `Added ${action.items.join(", ")} to ${listName}.`;
   }
 
+  // By-number control ("todo done 1"): pick the Nth open item in the same
+  // order the numbered list reply renders it (newest first).
+  if ((action.action === "complete" || action.action === "delete") && action.index !== undefined) {
+    const { data: rows, error } = await admin.database
+      .from("planner_items")
+      .select("id,text")
+      .eq("list_key", action.list_key)
+      .eq("done", false)
+      .order("created_at", { ascending: false })
+      .limit(40);
+    if (error) throw error;
+    const items = Array.isArray(rows) ? rows as Array<{ id: string; text: string }> : [];
+    const target = items[(action.index ?? 1) - 1];
+    if (!target) {
+      return items.length === 0
+        ? `📝 ${listName} list is empty.`
+        : `No item ${action.index} — the ${listName} list has ${items.length} open item${items.length === 1 ? "" : "s"}.`;
+    }
+    if (action.action === "complete") {
+      const { error: updError } = await admin.database
+        .from("planner_items")
+        .update({ done: true })
+        .eq("id", target.id);
+      if (updError) throw updError;
+      return `✅ Done: ${target.text}`;
+    }
+    const { error: delError } = await admin.database
+      .from("planner_items")
+      .delete()
+      .eq("id", target.id);
+    if (delError) throw delError;
+    return `🗑️ Deleted: ${target.text}`;
+  }
+
   const done = action.action === "complete";
   if (action.action === "complete" || action.action === "uncomplete") {
     for (const item of action.items) {
@@ -976,6 +1021,14 @@ export function parseFastHeuristicMessage(message: string): TelegramAction | nul
 
   const choreAction = parseChoreAction(normalized);
   if (choreAction) return choreAction;
+
+  const listIndexAction = parseListIndexAction(normalized);
+  if (listIndexAction) return listIndexAction;
+  const choreNumFast = lower.match(/^chores?\s+(done|skip|delete|remove)\s*[-–:]?\s*(\d{1,2})$/);
+  if (choreNumFast) {
+    const act = choreNumFast[1] === "done" ? "done" : choreNumFast[1] === "skip" ? "skip" : "delete";
+    return { kind: "chore", action: act, text: "", index: Number(choreNumFast[2]) };
+  }
 
   // Ambiguous chore statements ("chore done", "add chore" with no target) ask
   // back instead of risking a wrong action.
@@ -1514,6 +1567,11 @@ export function parseChoreAction(message: string, today: string = choreTodayIso(
     if (skip && skip[1].trim()) return { kind: "chore", action: "skip", text: skip[1].trim() };
     const del = lower.match(/^(?:please\s+)?(?:delete|remove|drop)\s+(?:the\s+|my\s+)?chore\s+(.+)$/);
     if (del && del[1].trim()) return { kind: "chore", action: "delete", text: del[1].trim() };
+    const num = lower.match(/^chores?\s+(done|skip|delete|remove)\s*[-–:]?\s*(\d{1,2})$/);
+    if (num) {
+      const act = num[1] === "done" ? "done" : num[1] === "skip" ? "skip" : "delete";
+      return { kind: "chore", action: act, text: "", index: Number(num[2]) };
+    }
     const done =
       lower.match(/^chores?\s+(?:done|finished|completed)\s+(.+)$/) ||
       lower.match(/^(?:done|finished|completed)(?:\s+with)?\s+(?:the\s+|my\s+)?chores?\s+(.+)$/);
@@ -1614,11 +1672,11 @@ function choreOccursOn(chore: { pattern: string; days: string; once_date: string
 function listChoresReply(chores: TodayChore[], day: string = dashboardLocalDate()): string {
   const label = day === dashboardLocalDate() ? "today" : `for ${dayLabel(day)}`;
   if (chores.length === 0) return `🧹 No chores ${label}.`;
-  const lines = chores.map((c) => {
-    const mark = c.done ? "✅" : "⬜";
-    return `• ${mark} ${c.text} (${timeWindowLabel(c.start_min, c.end_min)})`;
+  const lines = chores.map((c, i) => {
+    const mark = c.done ? "✅" : `${i + 1}.`;
+    return `${mark} ${c.text} (${timeWindowLabel(c.start_min, c.end_min)})`;
   });
-  return `🧹 Chores ${label} (${chores.filter((c) => c.done).length}/${chores.length} done):\n${lines.join("\n")}`;
+  return `🧹 Chores ${label} (${chores.filter((c) => c.done).length}/${chores.length} done):\n${lines.join("\n")}\nReply "chore done N" or "chore skip N".`;
 }
 
 // 'YYYY-MM-DD' -> "Tue Oct 20" (dashboard-local date; noon UTC avoids tz edges).
@@ -1676,7 +1734,21 @@ async function applyChoreAction(admin: any, action: ChoreAction): Promise<string
   }
 
   const todayChores = await loadTodayChores(admin, today);
+  const byIndex = (list: TodayChore[]): TodayChore | null =>
+    action.index !== undefined ? list[(action.index ?? 1) - 1] ?? null : null;
+
   if (action.action === "done") {
+    if (action.index !== undefined) {
+      const target = byIndex(todayChores);
+      if (!target || target.done) {
+        return todayChores.length === 0
+          ? "🧹 No chores today."
+          : `No chore ${action.index} — today has ${todayChores.length} chore${todayChores.length === 1 ? "" : "s"}.`;
+      }
+      const { error } = await admin.database.from("chore_dones").insert([{ chore_id: target.id, day: today }]);
+      if (error) throw error;
+      return `✅ Chore done: ${target.text}`;
+    }
     const query = action.text.trim().toLowerCase();
     let best: TodayChore | null = null;
     let bestScore = 0;
@@ -1702,6 +1774,13 @@ async function applyChoreAction(admin: any, action: ChoreAction): Promise<string
   }
 
   if (action.action === "skip") {
+    if (action.index !== undefined) {
+      const target = byIndex(todayChores);
+      if (!target) return `No chore ${action.index} today.`;
+      const { error } = await admin.database.from("chores").update({ skip_date: today }).eq("id", target.id);
+      if (error) throw error;
+      return `⏭️ Skipped today: ${target.text} — back on its next day`;
+    }
     const query = action.text.trim().toLowerCase();
     const chore = todayChores.find((c) => c.text.toLowerCase().includes(query)) ??
       todayChores.find((c) => query.includes(c.text.toLowerCase()));
@@ -1741,6 +1820,11 @@ function validateChoreAction(input: unknown): ChoreAction | null {
   const text = typeof candidate.text === "string" ? candidate.text.trim().slice(0, 80) : "";
   if (!text) return null;
   const action: ChoreAction = { kind: "chore", action: candidate.action, text };
+  if (candidate.action !== "add" && candidate.index !== undefined) {
+    const index = Number(candidate.index);
+    if (!Number.isFinite(index) || index < 1 || index > 24) return null;
+    action.index = Math.round(index);
+  }
   if (candidate.action === "add") {
     if (candidate.pattern === "daily" || candidate.pattern === "weekly" || candidate.pattern === "once") action.pattern = candidate.pattern;
     if (typeof candidate.days === "string") action.days = candidate.days.replace(/[^a-z,]/g, "").slice(0, 20);
@@ -1920,6 +2004,21 @@ function isMusicAction(action: TelegramAction): action is MusicAction {
   return action.kind === "music";
 }
 
+// Phase 4.4: numbered list control ("todo done 1", "todos delete 2").
+export function parseListIndexAction(message: string): PlannerAction | null {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const lower = normalized.toLowerCase();
+  const match = lower.match(/^(todos?|to-?dos?|chores?)\s+(done|complete[d]?|finished|delete|remove|skip)\s*[-–:]?\s*(\d{1,2})$/);
+  if (!match) return null;
+  const index = Number(match[3]);
+  if (index < 1 || index > 40) return null;
+  if (match[1].startsWith("chore")) return null; // chore numbers route via parseChoreAction
+  const verb = match[2];
+  const action = verb === "delete" || verb === "remove" ? "delete" : verb === "skip" ? null : "complete";
+  if (action === null) return null;
+  return { kind: "planner", action, list_key: "todo", items: [], index };
+}
+
 // Deterministic fallback for obvious music commands. Bare "play X" without a
 // music/soundbar hint stays with the LLM (calendar/events also "play" nothing,
 // but songs don't need a device suffix to be obvious once the LLM sees them).
@@ -1999,8 +2098,12 @@ async function applyMusicAction(action: MusicAction): Promise<string> {
     return bridgeCall("smartthings-bridge", { action: "on" });
   }
   if (action.action === "volume" && action.query !== "spotify") {
-    // Soundbar volume is hard-capped at 20% (also clamped inside the bridge).
+    // Soundbar volume is hard-capped at 20%. Prefer Spotify (works while the
+    // soundbar plays via Spotify Connect); SmartThings is the fallback for
+    // when the Spotify session is dead (requires a valid ST_PAT).
     const capped = Math.min(20, action.volume ?? 0);
+    const viaSpotify = await bridgeCall("spotify-bridge", { action: "volume", volume: capped });
+    if (!viaSpotify.startsWith("Bridge failed")) return viaSpotify;
     return bridgeCall("smartthings-bridge", { action: "volume", value: capped });
   }
   if (action.action === "volume" && action.query === "spotify") {

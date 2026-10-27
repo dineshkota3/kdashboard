@@ -162,18 +162,38 @@ async function spotifyAccessToken(): Promise<string | null> {
   if (!refresh || !clientId || !clientSecret) return null;
   if (spotifyTokenCache && Date.now() < spotifyTokenCache.expires - 60_000) return spotifyTokenCache.token;
   try {
+    // prefer the possibly-rotated refresh token persisted in the DB
+    let effectiveRefresh = refresh;
+    try {
+      const { createAdminClient: adminFactory } = await import("npm:@insforge/sdk");
+      const admin = adminFactory({ baseUrl: requiredEnv("INSFORGE_BASE_URL"), apiKey: requiredEnv("INSFORGE_API_KEY") });
+      const { data: rows } = await admin.database.from("spotify_refresh").select("token").eq("id", "default").limit(1);
+      const stored = rows?.[0]?.token;
+      if (typeof stored === "string" && stored) effectiveRefresh = stored;
+      var adminRef = admin;
+    } catch {
+      // DB read is best-effort; fall back to the bootstrap secret
+    }
     const res = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",
       headers: {
         Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh }),
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: effectiveRefresh }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.access_token) return null;
+    if (data.refresh_token && typeof adminRef !== "undefined") {
+      try {
+        await adminRef.database.from("spotify_refresh").delete().eq("id", "default");
+        await adminRef.database.from("spotify_refresh").insert([{ id: "default", token: data.refresh_token, updated_at: new Date().toISOString() }]);
+      } catch {
+        // best-effort persistence of the rotated token
+      }
+    }
     spotifyTokenCache = { token: data.access_token, expires: Date.now() + (data.expires_in ?? 3600) * 1000 };
     return spotifyTokenCache.token;
   } catch {

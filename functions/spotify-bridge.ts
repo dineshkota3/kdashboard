@@ -15,9 +15,34 @@ type NowPlaying = {
 
 let cachedToken: { token: string; expires: number } | null = null;
 
+// Spotify sometimes rotates the refresh token on use. Secrets can't be
+// updated at runtime, so the current token lives in the DB (the secret is
+// only the bootstrap for the very first refresh).
+async function currentRefreshToken(admin: any): Promise<string> {
+  try {
+    const { data } = await admin.database.from("spotify_refresh").select("token").eq("id", "default").limit(1);
+    const token = data?.[0]?.token;
+    if (typeof token === "string" && token) return token;
+  } catch {
+    // fall through to the bootstrap secret
+  }
+  return requiredEnv("SPOTIFY_REFRESH_TOKEN");
+}
+
+async function persistRefreshToken(admin: any, token: string): Promise<void> {
+  try {
+    await admin.database.from("spotify_refresh").delete().eq("id", "default");
+    await admin.database.from("spotify_refresh").insert([{ id: "default", token, updated_at: new Date().toISOString() }]);
+  } catch (e) {
+    console.error("spotify_refresh persist failed", String(e).slice(0, 120));
+  }
+}
+
 async function accessToken(): Promise<string> {
   if (cachedToken && Date.now() < cachedToken.expires - 60_000) return cachedToken.token;
-  const refresh = requiredEnv("SPOTIFY_REFRESH_TOKEN");
+  const { createAdminClient } = await import("npm:@insforge/sdk");
+  const admin = createAdminClient({ baseUrl: requiredEnv("INSFORGE_BASE_URL"), apiKey: requiredEnv("INSFORGE_API_KEY") });
+  const refresh = await currentRefreshToken(admin);
   const basic = btoa(`${requiredEnv("SPOTIFY_CLIENT_ID")}:${requiredEnv("SPOTIFY_CLIENT_SECRET")}`);
   const res = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST",
@@ -27,6 +52,7 @@ async function accessToken(): Promise<string> {
   });
   if (!res.ok) throw new Error(`spotify token refresh failed: ${res.status}`);
   const data = await res.json();
+  if (data.refresh_token) await persistRefreshToken(admin, data.refresh_token);
   cachedToken = { token: data.access_token, expires: Date.now() + (data.expires_in ?? 3600) * 1000 };
   return cachedToken.token;
 }

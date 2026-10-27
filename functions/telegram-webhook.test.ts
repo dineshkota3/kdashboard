@@ -14,6 +14,7 @@ import {
   parseEventRangeDays,
   parseChoreAction,
   parseDeviceAction,
+  parseListIndexAction,
   listAllChoresReply,
   choreWeekdayOf,
   addDaysIso,
@@ -930,4 +931,43 @@ test("validateDeviceAction clamps, rejects bad payloads, requires a param", () =
 test("PLANNER_SYSTEM_PROMPT documents device actions", () => {
   assert.match(PLANNER_SYSTEM_PROMPT, /SMART-HOME LIGHTS/);
   assert.match(PLANNER_SYSTEM_PROMPT, /"kind":"device"/);
+});
+
+
+// ---- phase 4.4: numbered list control ----
+
+test("todo numbers: done/delete by position", () => {
+  const a = parseListIndexAction("todo done 1") as any;
+  assert.equal(a.kind, "planner");
+  assert.equal(a.action, "complete");
+  assert.equal(a.list_key, "todo");
+  assert.equal(a.index, 1);
+  const d = parseListIndexAction("todos delete 2") as any;
+  assert.equal(d.action, "delete");
+  assert.equal(d.index, 2);
+  const dash = parseListIndexAction("todo done - 3") as any;
+  assert.equal(dash.index, 3);
+  assert.equal(parseListIndexAction("todo done 99"), null);
+});
+
+test("chore numbers route via parseChoreAction", () => {
+  const d = parseChoreAction("chore done 2", "2026-10-19") as any;
+  assert.equal(d.kind, "chore");
+  assert.equal(d.action, "done");
+  assert.equal(d.index, 2);
+  const s = parseChoreAction("chore skip - 1", "2026-10-19") as any;
+  assert.equal(s.action, "skip");
+  assert.equal(s.index, 1);
+  // text form still works
+  const t = parseChoreAction("chore done soak the cashew", "2026-10-19") as any;
+  assert.equal(t.text, "soak the cashew");
+});
+
+test("fast path routes numbered forms before the LLM", () => {
+  const t = parseFastHeuristicMessage("todo done 1") as any;
+  assert.equal(t.kind, "planner");
+  assert.equal(t.action, "complete");
+  const c = parseFastHeuristicMessage("chore done 2") as any;
+  assert.equal(c.kind, "chore");
+  assert.equal(c.index, 2);
 });
