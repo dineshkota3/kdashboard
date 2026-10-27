@@ -181,6 +181,23 @@ async function spotifyAccessToken(): Promise<string | null> {
   }
 }
 
+// Hourly persistence so the SSE hash reflects Spotify changes even when the
+// change came from the phone app (the bridges write it on commands too).
+async function storeSpotifyState(np: SpotifyPayload | null): Promise<void> {
+  try {
+    const { createAdminClient } = await import("npm:@insforge/sdk");
+    const admin = createAdminClient({ baseUrl: requiredEnv("INSFORGE_BASE_URL"), apiKey: requiredEnv("INSFORGE_API_KEY") });
+    await admin.database.from("spotify_state").delete().eq("id", "hourly");
+    await admin.database.from("spotify_state").insert([{
+      id: "hourly",
+      data: JSON.stringify(np ?? { is_playing: false, track: null }),
+      updated_at: new Date().toISOString(),
+    }]);
+  } catch {
+    // best-effort
+  }
+}
+
 async function spotifyBlock(): Promise<SpotifyPayload | null> {
   try {
     const token = await spotifyAccessToken();
@@ -384,7 +401,15 @@ async function loadDashboardPayload(today = dashboardLocalDate()): Promise<Dashb
       today,
       dashboardNowMin()
     ),
-    spotify: await spotifyBlock(),
+    spotify: await (async () => {
+      const block = await spotifyBlock();
+      try {
+        await storeSpotifyState(block);
+      } catch {
+        // best-effort
+      }
+      return block;
+    })(),
     nutrition: nutritionBlock(today),
     lists: (["todo", "workout", "grocery"] as const).map((key) => ({
       key,

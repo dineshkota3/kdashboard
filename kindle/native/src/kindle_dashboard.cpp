@@ -2843,7 +2843,7 @@ void drawMusicDashboard(Canvas* canvas, const Dashboard* dashboard, const char* 
   int pl_y = row2_y + 66;
   drawTextClipped(canvas, card_x + 20, pl_y, 200, "PLAYLISTS", 2, 0);
   pl_y += 26;
-  for (int pi = 0; pi < m->playlist_count && pl_y + 44 < card_y + card_h - 20; pi++) {
+  for (int pi = 0; pi < m->playlist_count && pi < 2 && pl_y + 44 < card_y + card_h - 24; pi++) {
     char pl_name_upper[40];
     upperCopy(pl_name_upper, sizeof(pl_name_upper), m->playlists[pi].name);
     strokeRect(canvas, card_x + 20, pl_y, card_w - 40, 44, 2, 0);
@@ -2854,10 +2854,6 @@ void drawMusicDashboard(Canvas* canvas, const Dashboard* dashboard, const char* 
   if (m->playlist_count == 0) {
     drawTextClipped(canvas, card_x + 20, pl_y, 300, "NO SAVED PLAYLISTS", 2, 0);
   }
-
-  char note[96];
-  snprintf(note, sizeof(note), "VOL CAPPED AT 20 // %s", m->is_playing ? "STREAMING" : "IDLE");
-  drawTextCentered(canvas, shell_x + shell_w / 2, card_y + card_h - 40, shell_w - 44, note, 2, 0);
 }
 
 void drawCurrentDashboard(Canvas* canvas, const Dashboard* dashboard, const char* status) {

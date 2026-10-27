@@ -31,12 +31,15 @@ type ChoreRow = {
   skip_date: string;
 };
 
+type SpotifyStateRow = { data: unknown; updated_at: string };
+
 type DashboardData = {
   items: PlannerItem[];
   tasks: PregnancyTask[];
   chores: ChoreRow[];
   choreDones: Array<{ chore_id: string; day: string }>;
   pendingCommands: number;
+  spotifyState: SpotifyStateRow | null;
   pregnancyWeek: number;
   pregnancyDay: number;
 };
@@ -124,7 +127,7 @@ async function loadDashboardData(): Promise<DashboardData> {
   const today = dashboardLocalDate();
 
   const baseStarted = timeMs();
-  const [itemsResult, tasksResult, choresResult, choresDoneResult, commandsResult] = await Promise.all([
+  const [itemsResult, tasksResult, choresResult, choresDoneResult, commandsResult, spotifyStateResult] = await Promise.all([
     admin.database
       .from("planner_items")
       .select("id,list_key,text,done,created_at,updated_at")
@@ -146,6 +149,11 @@ async function loadDashboardData(): Promise<DashboardData> {
       .from("device_commands")
       .select("id", { count: "exact" })
       .eq("status", "pending")
+      .limit(1),
+    admin.database
+      .from("spotify_state")
+      .select("data,updated_at")
+      .eq("id", "default")
       .limit(1)
   ]);
   const baseQueryMs = elapsedMs(baseStarted);
@@ -165,12 +173,16 @@ async function loadDashboardData(): Promise<DashboardData> {
   const { count: pendingCommands, error: commandsError } = commandsResult;
   if (commandsError) throw commandsError;
 
+  const { data: spotifyStateRows, error: spotifyError } = spotifyStateResult;
+  if (spotifyError) throw spotifyError;
+
   const payload = {
     items: items as PlannerItem[],
     tasks: tasks as PregnancyTask[],
     chores: (chores ?? []) as ChoreRow[],
     choreDones: choreDones ?? [],
     pendingCommands: pendingCommands ?? 0,
+    spotifyState: (spotifyStateRows ?? [])[0] ?? null,
     ...pregnancyProgress(today)
   };
   logTiming("kindle-dashboard-events", {
@@ -201,7 +213,7 @@ function getDashboardVersion(data: DashboardData): string {
     tasks: [...data.tasks].sort((a, b) => a.key.localeCompare(b.key)),
     chores: [...data.chores].sort((a, b) => a.id.localeCompare(b.id)),
     choreDones: [...data.choreDones].sort((a, b) => `${a.day}${a.chore_id}`.localeCompare(`${b.day}${b.chore_id}`)),
-    pendingCommands: data.pendingCommands,
+    spotify: data.spotifyState ? { data: data.spotifyState.data, updated_at: data.spotifyState.updated_at } : null,
     pregnancyWeek: data.pregnancyWeek,
     pregnancyDay: data.pregnancyDay
   }));

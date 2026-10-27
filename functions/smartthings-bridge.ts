@@ -67,6 +67,31 @@ async function runCommand(body: { action?: string; value?: number }): Promise<st
   return `🔊 ${labels[action] ?? action}`;
 }
 
+// Soundbar power/volume feed the same state row the SSE hash watches.
+async function storeSoundbarState(): Promise<void> {
+  try {
+    const status = await deviceStatus();
+    const { createAdminClient } = await import("npm:@insforge/sdk");
+    const admin = createAdminClient({ baseUrl: requiredEnv("INSFORGE_BASE_URL"), apiKey: requiredEnv("INSFORGE_API_KEY") });
+    const existing = await admin.database.from("spotify_state").select("data").eq("id", "default").limit(1);
+    let merged: Record<string, unknown> = { soundbar_on: status.state === "on", soundbar_volume: status.volume };
+    const prev = existing?.data?.[0]?.data;
+    if (typeof prev === "object" && prev !== null) {
+      merged = { ...prev, ...merged };
+    } else if (typeof prev === "string") {
+      try { merged = { ...JSON.parse(prev), ...merged }; } catch { /* keep defaults */ }
+    }
+    await admin.database.from("spotify_state").delete().eq("id", "default");
+    await admin.database.from("spotify_state").insert([{
+      id: "default",
+      data: JSON.stringify(merged),
+      updated_at: new Date().toISOString(),
+    }]);
+  } catch (e) {
+    console.error("spotify_state soundbar write failed", String(e).slice(0, 120));
+  }
+}
+
 export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders() });
@@ -86,6 +111,11 @@ export default async function (req: Request): Promise<Response> {
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       const summary = await runCommand(body ?? {});
+      try {
+        await storeSoundbarState();
+      } catch {
+        // state write is best-effort
+      }
       return jsonResponse({ ok: true, summary });
     }
     return jsonResponse({ ok: false, error: "Method not allowed" }, 405);

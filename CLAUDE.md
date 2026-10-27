@@ -32,6 +32,7 @@ history, and rationale: [docs/resources/insforge-limits.md](docs/resources/insfo
 | AI gateway credits | $1 / mo | must stay $0 — the app uses Z.ai directly, never the InsForge gateway |
 
 Hard rules:
+- **NEVER do polling or any pattern that increases InsForge function-call/egress/DB usage** - check `npx -y @insforge/cli usage` BEFORE implementing anything, and re-check right after deploying. Prefer event-driven designs (SSE + DB writes on change) over timers; every new recurring call must be justified in the phase doc with a per-month estimate.
 - No polling loops / retry storms against functions; keep every outbound fetch's `AbortSignal.timeout(8-10s)`.
 - Kindle refresh stays hourly (`INTERVAL=3600`); SSE (`kindle-dashboard-events.ts`) stays DB-only — no outbound API calls, ever.
 - Batch DB writes; no new cron schedules more frequent than hourly without asking.

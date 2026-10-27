@@ -249,6 +249,30 @@ async function runCommand(body: { action?: string; query?: string; volume?: numb
   return `Unknown action "${action.slice(0, 24)}".`;
 }
 
+// Best-effort state write so the SSE hash (and the dashboard) reflect changes
+// without any polling.
+async function storeState(np: NowPlaying): Promise<void> {
+  try {
+    const { createAdminClient } = await import("npm:@insforge/sdk");
+    const admin = createAdminClient({ baseUrl: requiredEnv("INSFORGE_BASE_URL"), apiKey: requiredEnv("INSFORGE_API_KEY") });
+    await admin.database.from("spotify_state").delete().eq("id", "default");
+    await admin.database.from("spotify_state").insert([{
+      id: "default",
+      data: JSON.stringify({
+        track: np.track,
+        artist: np.artist,
+        is_playing: np.is_playing,
+        progress_ms: np.progress_ms,
+        duration_ms: np.duration_ms,
+        device: np.device,
+      }),
+      updated_at: new Date().toISOString(),
+    }]);
+  } catch (e) {
+    console.error("spotify_state write failed", String(e).slice(0, 120));
+  }
+}
+
 export default async function (req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders() });
@@ -268,6 +292,11 @@ export default async function (req: Request): Promise<Response> {
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       const summary = await runCommand(body ?? {});
+      try {
+        await storeState(await nowPlaying());
+      } catch {
+        // state write is best-effort; command already succeeded
+      }
       return jsonResponse({ ok: true, summary });
     }
     return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
