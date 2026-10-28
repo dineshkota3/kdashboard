@@ -140,7 +140,9 @@ export default async function (req: Request): Promise<Response> {
       .select("id,text,pattern,days,once_date,start_min,end_min,skip_date,last_notified_at,created_at");
     if (choreError) throw choreError;
     // Same sort as the webhook's numbered list: start time, then creation.
-    const sortedChores = ((chores ?? []) as ChoreRow[]).sort((a, b) => a.start_min - b.start_min);
+    const sortedChores = ((chores ?? []) as ChoreRow[]).sort(
+      (a, b) => a.start_min - b.start_min || a.created_at.localeCompare(b.created_at)
+    );
 
     const { data: dones, error: doneError } = await admin.database
       .from("chore_dones")

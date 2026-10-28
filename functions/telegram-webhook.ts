@@ -1649,7 +1649,7 @@ type TodayChore = {
 async function loadTodayChores(admin: any, day: string): Promise<TodayChore[]> {
   const { data: rows, error } = await admin.database
     .from("chores")
-    .select("id,text,pattern,days,once_date,start_min,end_min,skip_date");
+    .select("id,text,pattern,days,once_date,start_min,end_min,skip_date,created_at");
   if (error) throw error;
   const { data: dones, error: doneError } = await admin.database
     .from("chore_dones")
@@ -1660,7 +1660,8 @@ async function loadTodayChores(admin: any, day: string): Promise<TodayChore[]> {
   return (rows ?? [])
     .filter((chore: any) => choreOccursOn(chore, day) && chore.skip_date !== day)
     .map((chore: any) => ({ ...chore, done: doneIds.has(chore.id) }))
-    .sort((a: TodayChore, b: TodayChore) => a.start_min - b.start_min);
+    .sort((a: TodayChore, b: TodayChore) =>
+      a.start_min - b.start_min || String((a as any).created_at ?? "").localeCompare(String((b as any).created_at ?? "")));
 }
 
 function choreOccursOn(chore: { pattern: string; days: string; once_date: string }, day: string): boolean {
