@@ -137,8 +137,10 @@ export default async function (req: Request): Promise<Response> {
 
     const { data: chores, error: choreError } = await admin.database
       .from("chores")
-      .select("id,text,pattern,days,once_date,start_min,end_min,skip_date,last_notified_at");
+      .select("id,text,pattern,days,once_date,start_min,end_min,skip_date,last_notified_at,created_at");
     if (choreError) throw choreError;
+    // Same sort as the webhook's numbered list: start time, then creation.
+    const sortedChores = ((chores ?? []) as ChoreRow[]).sort((a, b) => a.start_min - b.start_min);
 
     const { data: dones, error: doneError } = await admin.database
       .from("chore_dones")
@@ -147,13 +149,18 @@ export default async function (req: Request): Promise<Response> {
     if (doneError) throw doneError;
 
     const doneIds = new Set<string>((dones ?? []).map((r: { chore_id: string }) => r.chore_id));
-    const due = dueChores((chores ?? []) as ChoreRow[], doneIds, nowMs);
+    const due = dueChores(sortedChores, doneIds, nowMs);
 
     let notified = 0;
     if (due.length > 0) {
-      const lines = due.map((c) => `• ${c.text} (${timeDisplay(c.start_min, c.end_min)})`);
+      // Number by position in the full sorted list so the reminder numbers
+      // match the "chores" query reply (and "chore done N" targets it).
+      const lines = due.map((c) => {
+        const pos = sortedChores.findIndex((x) => x.id === c.id) + 1;
+        return `${pos}. ${c.text} (${timeDisplay(c.start_min, c.end_min)})`;
+      });
       const sent = await sendTelegramMessage(
-        `⏰ Chore reminder${due.length > 1 ? "s" : ""}:\n${lines.join("\n")}\nReply "chore done <name>" or "skip chore <name>".`
+        `⏰ Chore reminder${due.length > 1 ? "s" : ""}:\n${lines.join("\n")}\nReply "chore done N" or "chore skip N".`
       );
       if (sent) {
         notified = due.length;
