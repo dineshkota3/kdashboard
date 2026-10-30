@@ -65,8 +65,9 @@ ALTER TABLE chore_dones ENABLE ROW LEVEL SECURITY;
 ```
 
 Completion is a **per-day row**, so a weekly/daily chore is automatically open again on its next
-occurrence — no reset job. One-off chores are hard-deleted by the sweep (owner: "day passed →
-deleted"). Recurring chores are never deleted by the sweep.
+occurrence — no reset job. One-off chores: **undone ones roll over to the next day**
+(revised 2026-10-29, owner request — they nag until actually done); **done ones are
+deleted** by the sweep. Recurring chores are never deleted by the sweep.
 
 ### Occurrence resolution (pure function, lives in `chore-reminders.ts` + `telegram-webhook.ts`)
 
@@ -192,7 +193,8 @@ errors are visible), `✅ Chore done: soak the cashew`, `⏭️ Skipped today`.
 - Cron log shows sweeps + at most one Telegram send per run; quiet hours verified by forcing a
   manual run inside 00:00–09:00 (no send).
 - Reminder spacing: two consecutive runs 30 min apart with an undone chore → exactly 2 messages.
-- One-off deletion: add `once` chore dated yesterday via SQL → sweep removes it.
+- One-off rollover: add `once` chore dated yesterday, not done → sweep moves it to today.
+- One-off deletion: add `once` chore dated yesterday, done → sweep removes it.
 - Payload: `chores` reflects done/skip instantly; SSE pushes; device refreshes.
 - Device: CHORES times render; TODO panel at bottom; `add X to todo` appears there; chores
   tap-view lists today's chores.

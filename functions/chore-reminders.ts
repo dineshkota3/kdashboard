@@ -123,18 +123,6 @@ export default async function (req: Request): Promise<Response> {
     const nowMs = Date.now();
     const { day } = dashboardNow(nowMs);
 
-    // Sweep: one-off chores whose day passed are deleted (owner rule). Recurring
-    // chores are never swept; their open state is derived per day.
-    const { data: stale, error: staleError } = await admin.database
-      .from("chores")
-      .select("id")
-      .eq("pattern", "once")
-      .lt("once_date", day);
-    if (staleError) throw staleError;
-    for (const row of stale ?? []) {
-      await admin.database.from("chores").delete().eq("id", row.id);
-    }
-
     const { data: chores, error: choreError } = await admin.database
       .from("chores")
       .select("id,text,pattern,days,once_date,start_min,end_min,skip_date,last_notified_at,created_at");
@@ -146,9 +134,33 @@ export default async function (req: Request): Promise<Response> {
 
     const { data: dones, error: doneError } = await admin.database
       .from("chore_dones")
-      .select("chore_id")
-      .eq("day", day);
+      .select("chore_id,day");
     if (doneError) throw doneError;
+    const doneRows = dones ?? [];
+
+    // Sweep past one-off chores (owner rule, revised: unfinished chores roll
+    // over to today instead of being dropped):
+    //   - done ones: deleted (complete; the done row remains as history)
+    //   - not-done ones: carried forward to today (once_date = today), so they
+    //     nag again until actually done
+    let swept = 0;
+    let carried = 0;
+    for (const chore of sortedChores) {
+      if (chore.pattern !== "once" || !chore.once_date || chore.once_date >= day) continue;
+      const wasDone = doneRows.some((d) => d.chore_id === chore.id && d.day === chore.once_date);
+      if (wasDone) {
+        await admin.database.from("chores").delete().eq("id", chore.id);
+        swept++;
+      } else {
+        await admin.database.from("chores").update({
+          once_date: day,
+          last_notified_at: "1970-01-01T00:00:00Z", // remind promptly after rollover
+        }).eq("id", chore.id);
+        carried++;
+        chore.once_date = day; // keep the in-memory copy consistent for today's run
+        chore.last_notified_at = "1970-01-01T00:00:00Z";
+      }
+    }
 
     const doneIds = new Set<string>((dones ?? []).map((r: { chore_id: string }) => r.chore_id));
     const due = dueChores(sortedChores, doneIds, nowMs);
@@ -172,7 +184,7 @@ export default async function (req: Request): Promise<Response> {
       }
     }
 
-    return jsonResponse({ ok: true, day, swept: (stale ?? []).length, due: due.length, notified });
+    return jsonResponse({ ok: true, day, swept, carried, due: due.length, notified });
   } catch (error) {
     return jsonResponse({ ok: false, error: String(error) }, 500);
   }
